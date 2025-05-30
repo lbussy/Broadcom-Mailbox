@@ -32,131 +32,97 @@
 #ifndef MAILBOX_H
 #define MAILBOX_H
 
-#include <linux/ioctl.h>
+#include <stddef.h>
 #include <stdint.h>
 
-/** New kernel version (>= 4.1) major device number. */
-#define MAJOR_NUM_A 249
-/** Older kernel version major device number. */
-#define MAJOR_NUM_B 100
-/** IOCTL command for mailbox property interface. */
-#define IOCTL_MBOX_PROPERTY _IOWR(MAJOR_NUM_B, 0, char *)
-/** Name of the mailbox device file. */
-#define DEVICE_FILE_NAME "/dev/vcio"
-/** Local fallback mailbox device file name. */
-#define LOCAL_DEVICE_FILE_NAME "/tmp/mbox"
-
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-/**
- * @brief Opens the mailbox device for communication.
- *
- * @return File descriptor for the mailbox device, or -1 if opening fails.
- */
-int mbox_open();
+    /**
+     * @brief Opens the mailbox device for communication.
+     *
+     * @return File descriptor for the mailbox device, or -1 if opening fails.
+     */
+    int mbox_open();
 
-/**
- * @brief Closes the mailbox device.
- *
- * @param file_desc File descriptor returned by mbox_open().
- */
-void mbox_close(int file_desc);
+    /**
+     * @brief Closes the mailbox device.
+     *
+     * @param file_desc File descriptor returned by mbox_open().
+     */
+    void mbox_close(int file_desc);
 
-/**
- * @brief Gets the version of the mailbox interface.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @return Version of the mailbox interface.
- */
-uint32_t get_version(int file_desc);
+    /**
+     * @brief Gets the version of the mailbox interface.
+     *
+     * @param file_desc File descriptor returned by mbox_open().
+     * @return Version of the mailbox interface.
+     */
+    uint32_t get_version(int file_desc);
 
-/**
- * @brief Allocates memory using the mailbox interface.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param size Size of memory to allocate in bytes.
- * @param align Alignment of memory.
- * @param flags Flags specifying memory properties.
- * @return Handle to the allocated memory.
- */
-uint32_t mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags);
+    /**
+     * @brief Allocates memory using the mailbox interface.
+     *
+     * @param file_desc File descriptor returned by mbox_open().
+     * @param size Size of memory to allocate in bytes.
+     * @param align Alignment of memory.
+     * @param flags Flags specifying memory properties.
+     * @return Handle to the allocated memory.
+     */
+    uint32_t mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags);
 
-/**
- * @brief Frees previously allocated memory.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle Handle to the memory to free.
- * @return Result of the operation (0 for error, non-zero for success).
- */
-uint32_t mem_free(int file_desc, uint32_t handle);
+    /**
+     * @brief Frees previously allocated memory.
+     *
+     * @param file_desc File descriptor returned by mbox_open().
+     * @param handle Handle to the memory to free.
+     * @return Result of the operation (0 for error, non-zero for success).
+     */
+    uint32_t mem_free(int file_desc, uint32_t handle);
 
-/**
- * @brief Locks allocated memory.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle Handle to the memory to lock.
- * @return Result of the operation (handle on success).
- */
-uint32_t mem_lock(int file_desc, uint32_t handle);
+    /**
+     * @brief Locks allocated memory.
+     *
+     * @param file_desc File descriptor returned by mbox_open().
+     * @param handle Handle to the memory to lock.
+     * @return Result of the operation (handle on success).
+     */
+    uint32_t mem_lock(int file_desc, uint32_t handle);
 
-/**
- * @brief Unlocks locked memory.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle Handle to the memory to unlock.
- * @return Result of the operation (0 for error, non-zero for success).
- */
-uint32_t mem_unlock(int file_desc, uint32_t handle);
+    /**
+     * @brief Unlocks locked memory.
+     *
+     * @param file_desc File descriptor returned by mbox_open().
+     * @param handle Handle to the memory to unlock.
+     * @return Result of the operation (0 for error, non-zero for success).
+     */
+    uint32_t mem_unlock(int file_desc, uint32_t handle);
 
-/**
- * @brief Maps physical memory into the process's address space.
- *
- * @param base Base address of the memory to map.
- * @param size Size of the memory region to map in bytes.
- * @return Pointer to the mapped memory region.
- */
-void *mapmem(uint32_t base, uint32_t size);
+    /**
+     * @brief Maps physical memory into the process’s address space.
+     * @param base  Physical base address to map.
+     * @param size  Number of bytes to map.
+     * @return On success, pointer to [base…base+size); NULL on failure.
+     */
+    void *mapmem(uint32_t base, size_t size);
 
-/**
- * @brief Unmaps memory previously mapped with mapmem().
- *
- * @param addr Pointer to the mapped memory.
- * @param size Size of the mapped memory region in bytes.
- */
-void unmapmem(void *addr, uint32_t size);
+    /**
+     * @brief Unmaps a region previously mapped by mapmem().
+     * @param addr  Pointer returned by mapmem().
+     * @param size  Same size passed into mapmem().
+     */
+    void unmapmem(void *addr, size_t size);
 
-/**
- * @brief Executes code in the GPU using the mailbox interface.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param code Address of the code to execute.
- * @param r0-r5 Parameters passed to the GPU.
- * @return Result of the operation (0 for error, non-zero for success).
- */
-uint32_t execute_code(int file_desc, uint32_t code, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3, uint32_t r4, uint32_t r5);
-
-/**
- * @brief Enables or disables the QPU using the mailbox interface.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param enable Non-zero to enable QPU, zero to disable.
- * @return Result of the operation (0 for error, non-zero for success).
- */
-uint32_t qpu_enable(int file_desc, uint32_t enable);
-
-/**
- * @brief Executes QPU programs using the mailbox interface.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param num_qpus Number of QPUs to execute on.
- * @param control Control address for the QPU program.
- * @param noflush Non-zero to avoid flushing caches, zero otherwise.
- * @param timeout Timeout for execution in milliseconds.
- * @return Result of the operation (0 for error, non-zero for success).
- */
-uint32_t execute_qpu(int file_desc, uint32_t num_qpus, uint32_t control, uint32_t noflush, uint32_t timeout);
+    /**
+     * @brief Explicitly cleans up the /dev/mem file descriptor.
+     *
+     * Clients can call this to release the cached descriptor obtained via
+     * get_mem_fd(). If the descriptor is valid, it is closed; otherwise,
+     * the function does nothing. Safe to call multiple times.
+     */
+    void mem_cleanup(void);
 
 #ifdef __cplusplus
 }

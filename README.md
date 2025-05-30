@@ -2,12 +2,13 @@
 
 This library provides an interface for communicating with the **Raspberry Pi GPU** via the **mailbox interface**. It enables users to interact with the GPU, allocate memory, execute GPU code, and control QPUs.
 
+This is NOT my code, it is code I found in some older projects and [Wsprry Pi](https://github.com/lbussy/wsprrypi) depends upon this to work with low-level device control.  This is also modified for my needs, and unused code (`qemu`) has been removed.
+
 ## 📌 Features
 
 - Open and close the mailbox device.
 - Query the mailbox interface version.
 - Allocate, free, lock, and unlock GPU memory.
-- Execute GPU code and control QPUs.
 - Map physical memory into the process's address space.
 
 ## 📦 Installation
@@ -91,14 +92,6 @@ mbox_close(file_desc);
 | `uint32_t mem_unlock(int fd, uint32_t handle)` | Unlocks locked memory. |
 | `void *mapmem(uint32_t base, uint32_t size)` | Maps physical memory into the process's address space. |
 | `void unmapmem(void *addr, uint32_t size)` | Unmaps previously mapped memory. |
-
-### GPU Execution
-
-| Function | Description |
-|----------|------------|
-| `uint32_t execute_code(int fd, uint32_t code, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3, uint32_t r4, uint32_t r5)` | Executes GPU code. |
-| `uint32_t qpu_enable(int fd, uint32_t enable)` | Enables/disables the QPU. |
-| `uint32_t execute_qpu(int fd, uint32_t num_qpus, uint32_t control, uint32_t noflush, uint32_t timeout)` | Executes QPU programs. |
 
 ## 🔧 Requirements
 

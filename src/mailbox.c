@@ -1,20 +1,43 @@
 /**
  * @file mailbox.c
- * @brief Implementation of mailbox-based communication for the Raspberry Pi.
+ * @brief Implementation of the mailbox property‐interface for the Raspberry Pi GPU.
  *
+ * @details
+ * This source file provides the definitions for all functions declared in `mailbox.h`,
+ * enabling communication with the VideoCore GPU via the mailbox property‐interface. It implements:
+ *   - Opening and closing the `/dev/vcio` mailbox device (`mbox_open`, `mbox_close`).
+ *   - Sending property buffers to the GPU using an IOCTL (`real_mbox_property` and its timeout variant).
+ *   - Querying the GPU firmware version (`real_get_version` → `get_version`).
+ *   - Allocating (`real_mem_alloc` → `mem_alloc`), locking (`real_mem_lock` → `mem_lock`),
+ *     unlocking (`real_mem_unlock` → `mem_unlock`), and freeing (`real_mem_free` → `mem_free`)
+ *     contiguous, GPU‐accessible memory.
+ *   - Mapping (`real_mapmem` → `mapmem`) and unmapping (`real_unmapmem` → `unmapmem`)
+ *     physical memory regions via `/dev/mem`.
+ *   - Caching the `/dev/mem` file descriptor with `real_get_mem_fd` and cleaning it up at program exit
+ *     (`real_mem_cleanup` → `mem_cleanup`).
+ *   - (Optionally) installing test hooks for `open()`, `/dev/mem` access, and mailbox ioctl calls if
+ *     compiled with `ENABLE_MBOX_TEST_HOOKS`.
+ *
+ *   The mailbox property‐interface documentation can be found at:
+ *     - https://github.com/raspberrypi/firmware/wiki/Mailboxes
+ *     - https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface
+ *     - https://bitbanged.com/posts/understanding-rpi/the-mailbox/
+ *     - http://www.freenos.org/doxygen/classBroadcomMailbox.html
+ *
+ * @copyright
  * Copyright (c) 2012, Broadcom Europe Ltd.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
- *  - Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  - Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *  - Neither the name of the copyright holder nor the names of its
- *    contributors may be used to endorse or promote products derived from
- *    this software without specific prior written permission.
+ *   - Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions, and the following disclaimer.
+ *   - Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions, and the following disclaimer in the
+ *     documentation and/or other materials provided with the distribution.
+ *   - Neither the name of the copyright holder nor the names of its
+ *     contributors may be used to endorse or promote products derived from
+ *     this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -29,81 +52,327 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-/*
- * References:
- * - https://github.com/raspberrypi/firmware/wiki/Mailboxes
- * - https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface
- * - https://bitbanged.com/posts/understanding-rpi/the-mailbox/
- * - http://www.freenos.org/doxygen/classBroadcomMailbox.html
- */
-
-#include "mailbox.h" /* our prototypes + stdint.h */
+#include "mailbox.h"
 
 #include <errno.h>
-#include <fcntl.h>  /* open, O_RDWR, O_SYNC */
-#include <stdint.h> /* for uintptr_t */
-#include <stdlib.h>
+#include <fcntl.h>     /* open flags */
+#include <stdint.h>    /* uintptr_t */
+#include <stdlib.h>    /* atexit, NULL */
 #include <sys/ioctl.h> /* ioctl */
 #include <sys/mman.h>  /* mmap, munmap, MAP_SHARED, PROT_* */
 #include <unistd.h>    /* close, sysconf */
+
+#ifdef DEBUG_MAILBOX
+#include <stdio.h>
+#endif
 
 #ifdef ENABLE_TIMEOUTS
 #include <signal.h>
 #include <setjmp.h>
 #endif
 
-#ifdef DEBUG_MAILBOX
-#include <stdio.h>
-#endif
-
-/* Mailbox property‐interface tag IDs */
-enum
-{
-    TAG_GET_FIRMWARE_VERSION = 0x00000001,
-    TAG_ALLOCATE_MEMORY = 0x3000c,
-    TAG_LOCK_MEMORY = 0x3000d,
-    TAG_UNLOCK_MEMORY = 0x3000e,
-    TAG_RELEASE_MEMORY = 0x3000f,
-};
-
 /**
  * @brief IOCTL command code for the mailbox property interface.
- *
- * Uses magic number 100 and command number 0 to send property-interface
- * messages to the VideoCore GPU via the `/dev/vcio` driver.
  */
 #define IOCTL_MBOX_PROPERTY _IOWR(100, 0, char *)
 
+/*---------------------------------------------------------------------------*/
+/* 1) Forward‐declarations of “real_…” implementations                       */
+/*---------------------------------------------------------------------------*/
+static int real_mbox_property(int file_desc, void *buf);
+static int real_open_wrapper(const char *path, int flags);
+static int real_get_mem_fd(void);
+static void real_mbox_close(int file_desc);
+static uint32_t real_get_version(int file_desc);
+static uint32_t real_mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags);
+static uint32_t real_mem_free(int file_desc, uint32_t handle);
+static uint32_t real_mem_lock(int file_desc, uint32_t handle);
+static uint32_t real_mem_unlock(int file_desc, uint32_t handle);
+static void *real_mapmem(uint32_t base, size_t size);
+static void real_unmapmem(void *addr, size_t size);
+static void real_mem_cleanup(void);
+
+#ifdef ENABLE_MBOX_TEST_HOOKS
+/*---------------------------------------------------------------------------*/
+/* 2) Hook pointers (default to “real_…” funcs) and setters                   */
+/*---------------------------------------------------------------------------*/
+static int (*property_impl)(int, void *) = real_mbox_property;
+static int (*open_impl)(const char *, int) = real_open_wrapper;
+static int (*get_mem_fd_impl)(void) = real_get_mem_fd;
+static void (*close_impl)(int) = real_mbox_close;
+static uint32_t (*get_version_impl)(int) = real_get_version;
+static uint32_t (*mem_alloc_impl)(int, uint32_t, uint32_t, uint32_t) = real_mem_alloc;
+static uint32_t (*mem_free_impl)(int, uint32_t) = real_mem_free;
+static uint32_t (*mem_lock_impl)(int, uint32_t) = real_mem_lock;
+static uint32_t (*mem_unlock_impl)(int, uint32_t) = real_mem_unlock;
+static void *(*mapmem_impl)(uint32_t, size_t) = real_mapmem;
+static void (*unmapmem_impl)(void *, size_t) = real_unmapmem;
+static void (*mem_cleanup_impl)(void) = real_mem_cleanup;
+
+/** Install a custom `ioctl()` hook (if non‐NULL); otherwise revert to real. */
+void mailbox_set_property_hook(int (*hook)(int, void *))
+{
+    property_impl = hook ? hook : real_mbox_property;
+}
+
+/** Install a custom `open()` hook (if non‐NULL); otherwise revert to real. */
+void mailbox_set_open_hook(int (*hook)(const char *, int))
+{
+    open_impl = hook ? hook : real_open_wrapper;
+}
+
+/** Install a custom `/dev/mem`‐fd hook (if non‐NULL); otherwise revert. */
+void mailbox_set_mem_fd_hook(int (*hook)(void))
+{
+    get_mem_fd_impl = hook ? hook : real_get_mem_fd;
+}
+
+/** Install a custom `close()` hook for mailbox (if non‐NULL); otherwise revert. */
+void mailbox_set_close_hook(void (*hook)(int))
+{
+    close_impl = hook ? hook : real_mbox_close;
+}
+
+/** Install a custom `get_version()` hook (if non‐NULL); otherwise revert. */
+void mailbox_set_get_version_hook(uint32_t (*hook)(int))
+{
+    get_version_impl = hook ? hook : real_get_version;
+}
+
+/** Install a custom `mem_alloc()` hook (if non‐NULL); otherwise revert. */
+void mailbox_set_mem_alloc_hook(uint32_t (*hook)(int, uint32_t, uint32_t, uint32_t))
+{
+    mem_alloc_impl = hook ? hook : real_mem_alloc;
+}
+
+/** Install a custom `mem_free()` hook (if non‐NULL); otherwise revert. */
+void mailbox_set_mem_free_hook(uint32_t (*hook)(int, uint32_t))
+{
+    mem_free_impl = hook ? hook : real_mem_free;
+}
+
+/** Install a custom `mem_lock()` hook (if non‐NULL); otherwise revert. */
+void mailbox_set_mem_lock_hook(uint32_t (*hook)(int, uint32_t))
+{
+    mem_lock_impl = hook ? hook : real_mem_lock;
+}
+
+/** Install a custom `mem_unlock()` hook (if non‐NULL); otherwise revert. */
+void mailbox_set_mem_unlock_hook(uint32_t (*hook)(int, uint32_t))
+{
+    mem_unlock_impl = hook ? hook : real_mem_unlock;
+}
+
+/** Install a custom `mapmem()` hook (if non‐NULL); otherwise revert. */
+void mailbox_set_mapmem_hook(void *(*hook)(uint32_t, size_t))
+{
+    mapmem_impl = hook ? hook : real_mapmem;
+}
+
+/** Install a custom `unmapmem()` hook (if non‐NULL); otherwise revert. */
+void mailbox_set_unmapmem_hook(void (*hook)(void *, size_t))
+{
+    unmapmem_impl = hook ? hook : real_unmapmem;
+}
+
+/** Install a custom `mem_cleanup()` hook (if non‐NULL); otherwise revert. */
+void mailbox_set_mem_cleanup_hook(void (*hook)(void))
+{
+    mem_cleanup_impl = hook ? hook : real_mem_cleanup;
+}
+#endif // ENABLE_MBOX_TEST_HOOKS
+
+/*---------------------------------------------------------------------------*/
+/* 3) Public API functions                                                    */
+/*---------------------------------------------------------------------------*/
+
 /**
- * @brief Returns a cached file descriptor for /dev/mem, opening it on first call.
- *
- * On the first successful open, registers mem_cleanup() with atexit().
- *
- * @return Non-negative fd on success; -1 on error (errno set by open()).
+ * @brief Opens the `/dev/vcio` mailbox device.
+ * @return File descriptor (>=0) on success; -1 on error.
  */
-static int get_mem_fd(void)
+int mbox_open(void)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    return open_impl("/dev/vcio", O_RDWR);
+#else
+    return real_open_wrapper("/dev/vcio", O_RDWR);
+#endif
+}
+
+/**
+ * @brief Closes the mailbox device.
+ * @param file_desc File descriptor returned by mbox_open().
+ */
+void mbox_close(int file_desc)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    close_impl(file_desc);
+#else
+    real_mbox_close(file_desc);
+#endif
+}
+
+/**
+ * @brief Queries GPU firmware version.
+ * @param file_desc File descriptor from mbox_open().
+ * @return Nonzero version on success; 0 on error (errno=EIO).
+ */
+uint32_t get_version(int file_desc)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    return get_version_impl(file_desc);
+#else
+    return real_get_version(file_desc);
+#endif
+}
+
+/**
+ * @brief Allocates GPU memory (ALLOCATE_MEMORY tag).
+ * @param file_desc File descriptor from mbox_open().
+ * @param size      Number of bytes to allocate.
+ * @param align     Alignment in bytes.
+ * @param flags     Allocation flags.
+ * @return Nonzero handle on success; 0 on error (errno=EIO).
+ */
+uint32_t mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    return mem_alloc_impl(file_desc, size, align, flags);
+#else
+    return real_mem_alloc(file_desc, size, align, flags);
+#endif
+}
+
+/**
+ * @brief Frees GPU memory (RELEASE_MEMORY tag).
+ * @param file_desc File descriptor from mbox_open().
+ * @param handle    Handle returned by mem_alloc().
+ * @return 0 on success; nonzero on firmware error; 0 + errno=EIO on ioctl error.
+ */
+uint32_t mem_free(int file_desc, uint32_t handle)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    return mem_free_impl(file_desc, handle);
+#else
+    return real_mem_free(file_desc, handle);
+#endif
+}
+
+/**
+ * @brief Locks GPU memory (LOCK_MEMORY tag).
+ * @param file_desc File descriptor from mbox_open().
+ * @param handle    Handle returned by mem_alloc().
+ * @return Bus‐address handle (>0) on success; 0 + errno set on error.
+ */
+uint32_t mem_lock(int file_desc, uint32_t handle)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    return mem_lock_impl(file_desc, handle);
+#else
+    return real_mem_lock(file_desc, handle);
+#endif
+}
+
+/**
+ * @brief Unlocks GPU memory (UNLOCK_MEMORY tag).
+ * @param file_desc File descriptor from mbox_open().
+ * @param handle    Handle returned by mem_alloc().
+ * @return 0 on success; nonzero on firmware error; 0 + errno=EIO on ioctl error.
+ */
+uint32_t mem_unlock(int file_desc, uint32_t handle)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    return mem_unlock_impl(file_desc, handle);
+#else
+    return real_mem_unlock(file_desc, handle);
+#endif
+}
+
+/**
+ * @brief Maps physical memory into user space.
+ * @param base  Physical base address to map.
+ * @param size  Number of bytes to map.
+ * @return Pointer to mapped region on success; NULL + errno on error.
+ */
+void *mapmem(uint32_t base, size_t size)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    return mapmem_impl(base, size);
+#else
+    return real_mapmem(base, size);
+#endif
+}
+
+/**
+ * @brief Unmaps a region previously mapped by mapmem().
+ * @param addr  Pointer returned by mapmem().
+ * @param size  Same size passed into mapmem().
+ */
+void unmapmem(void *addr, size_t size)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    unmapmem_impl(addr, size);
+#else
+    real_unmapmem(addr, size);
+#endif
+}
+
+/**
+ * @brief Cleans up (closes) the cached `/dev/mem` file descriptor.
+ * Registered via atexit(); safe to call multiple times.
+ */
+void mem_cleanup(void)
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    mem_cleanup_impl();
+#else
+    real_mem_cleanup();
+#endif
+}
+
+/*---------------------------------------------------------------------------*/
+/* 4) “Real” implementations                                                   */
+/*---------------------------------------------------------------------------*/
+
+/**
+ * @brief Wrapper around open(), so we can override open() via open_impl.
+ */
+static int real_open_wrapper(const char *path, int flags)
+{
+    return open(path, flags);
+}
+
+/**
+ * @brief Closes the mailbox file descriptor.
+ */
+static void real_mbox_close(int file_desc)
+{
+    close(file_desc);
+}
+
+/**
+ * @brief Returns a cached `/dev/mem` fd. Registers real_mem_cleanup via atexit().
+ */
+static int real_get_mem_fd(void)
 {
     static int mem_fd = -1;
     if (mem_fd < 0)
     {
-        mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+        mem_fd = real_open_wrapper("/dev/mem", O_RDWR | O_SYNC);
         if (mem_fd >= 0)
         {
-            atexit(mem_cleanup);
+            atexit(real_mem_cleanup);
         }
     }
     return mem_fd;
 }
 
 /**
- * @brief Explicitly cleans up the /dev/mem file descriptor.
- *
- * Registered via atexit(), so it will be called automatically
- * on program exit.
+ * @brief Cleanup callback (registered via atexit) that closes `/dev/mem`.
  */
-void mem_cleanup(void)
+static void real_mem_cleanup(void)
 {
-    int fd = get_mem_fd();
+    int fd = real_get_mem_fd();
     if (fd >= 0)
     {
         close(fd);
@@ -111,223 +380,120 @@ void mem_cleanup(void)
 }
 
 /**
- * @brief Sends a mailbox property interface message.
- *
- * Forwards the property buffer `buf` to the GPU via the mailbox ioctl command.
- * On failure, returns -1 and leaves errno set by the ioctl call.
- * In debug builds (`DEBUG_MAILBOX`), dumps the raw 32-bit words of the
- * response buffer to stdout.
- *
- * @param file_desc  File descriptor returned by `mbox_open()`. Must be >= 0.
- * @param buf        Pointer to the mailbox property message buffer. Must be non-NULL.
- * @return The return value from the ioctl call (>=0), or -1 on error (errno set).
+ * @brief Sends a mailbox property buffer via ioctl.
+ * @return >=0 on success; -1 on error (errno set).
  */
-static int mbox_property(int file_desc, void *buf)
+static int real_mbox_property(int file_desc, void *buf)
 {
     if (buf == NULL)
     {
         errno = EINVAL;
         return -1;
     }
-
-    int ret_val = ioctl(file_desc, IOCTL_MBOX_PROPERTY, buf);
+    int ret = ioctl(file_desc, IOCTL_MBOX_PROPERTY, buf);
 
 #ifdef DEBUG_MAILBOX
     uint32_t *p = buf;
     size_t words = *(uint32_t *)buf / sizeof(uint32_t);
     for (size_t i = 0; i < words; i++)
-        printf("%04zx: 0x%08x\n", i * sizeof *p, p[i]);
+    {
+        printf("%04zx: 0x%08x\n", i * sizeof(*p), p[i]);
+    }
 #endif
 
-    return (ret_val < 0) ? -1 : ret_val;
+    return (ret < 0) ? -1 : ret;
 }
 
 #ifdef ENABLE_TIMEOUTS
-
-/**
- * @brief Jump buffer for mailbox ioctl timeout handling.
- *
- * Used by sigsetjmp()/siglongjmp() to escape a hanging ioctl after the alarm fires.
- */
 static sigjmp_buf jmpbuf;
 
 /**
- * @brief Signal handler for the SIGALRM timeout.
- *
- * Invoked when the alarm set in mbox_property_with_timeout() expires.
- * Jumps back to the checkpoint in mbox_property_with_timeout() via siglongjmp().
- *
- * @param sig The signal number (should be SIGALRM).
+ * @brief SIGALRM handler: jumps back on timeout.
  */
 static void timeout_handler(int sig)
 {
-    (void)sig; // unused, but required signature
+    (void)sig;
     siglongjmp(jmpbuf, 1);
 }
 
 /**
- * @brief Performs a mailbox-property ioctl with a one-second timeout.
- *
- * Installs an alarm handler for SIGALRM, sets a one-second timer, and then
- * performs the ioctl.  If the ioctl hangs past the timeout, the SIGALRM handler
- * will longjmp back, causing this function to return -1 with errno set to ETIMEDOUT.
- * On success or any non-timeout error, the alarm is canceled.
- *
- * @param fd  File descriptor for /dev/vcio (from mbox_open()).
- * @param buf Pointer to the mailbox message buffer.
- * @return The ioctl return value (>=0) on success;
- *         -1 on error or timeout (errno=ETIMEDOUT if timed out, or set by ioctl()).
+ * @brief Perform a mailbox IOCTL with 1-second timeout.
+ * @return >=0 on success; -1 on error (errno=ETIMEDOUT if timed out).
  */
-static int __attribute__((unused)) mbox_property_with_timeout(int fd, void *buf)
+static int __attribute__((unused))
+mbox_property_with_timeout(int fd, void *buf)
 {
-    struct sigaction sa = {
-        .sa_handler = timeout_handler,
-        .sa_flags = 0};
+    struct sigaction sa = {.sa_handler = timeout_handler, .sa_flags = 0};
     sigemptyset(&sa.sa_mask);
     sigaction(SIGALRM, &sa, NULL);
 
-    /* Set a checkpoint; siglongjmp to here on timeout */
     if (sigsetjmp(jmpbuf, 1) != 0)
     {
         errno = ETIMEDOUT;
         return -1;
     }
 
-    /* Arm the one-second timer */
     alarm(1);
-
-    /* Perform the actual ioctl */
     int ret = ioctl(fd, IOCTL_MBOX_PROPERTY, buf);
-
-    /* Cancel the timer */
     alarm(0);
-
     return ret;
 }
-
 #endif // ENABLE_TIMEOUTS
 
 /**
- * @brief Returns the system page size, cached after first lookup.
- *
- * Queries sysconf(_SC_PAGESIZE) on the first call, falls back to 4096 if it fails,
- * and reuses that value on all subsequent calls to avoid extra syscalls.
- *
- * @return The page size in bytes.
+ * @brief Queries GPU firmware version (GET_FIRMWARE_VERSION tag).
+ * @return Nonzero version on success; 0 + errno=EIO on error.
  */
-static size_t get_page_size(void)
-{
-    static size_t page = 0;
-    if (page == 0)
-    {
-        long tmp = sysconf(_SC_PAGESIZE);
-        if (tmp < 0)
-        {
-            /* sysconf failed—fall back and set errno for caller */
-            page = 4096;
-            errno = (errno == 0 ? EINVAL : errno);
-        }
-        else
-        {
-            page = (size_t)tmp;
-        }
-    }
-    return page;
-}
-
-/**
- * @brief Opens the mailbox device for communication.
- *
- * Attempts to open the `/dev/vcio` character device.
- * On success, returns a non-negative file descriptor.
- * On failure, returns -1 and leaves errno set by open().
- *
- * @return File descriptor (>=0) on success; -1 on error.
- */
-int mbox_open(void)
-{
-    int file_desc = open("/dev/vcio", O_RDWR);
-    if (file_desc < 0)
-    {
-        /* errno is already set by open() */
-        return -1;
-    }
-    return file_desc;
-}
-
-/**
- * @brief Closes the mailbox device.
- *
- * @param file_desc File descriptor for the mailbox to close.
- */
-void mbox_close(int file_desc)
-{
-    close(file_desc);
-}
-
-/**
- * @brief Queries the GPU firmware version via the mailbox interface.
- *
- * Sends the GET_FIRMWARE_VERSION property tag and returns the 32-bit version
- * word from the VideoCore GPU.
- *
- * @param file_desc  File descriptor returned by `mbox_open()`.
- * @return On success, the firmware version.
- *         On failure, returns 0 and sets `errno` (e.g. to `EIO`).
- */
-uint32_t get_version(int file_desc)
+static uint32_t real_get_version(int file_desc)
 {
     uint32_t msg[7];
+    msg[0] = sizeof(msg);
+    msg[1] = 0;
+    msg[2] = TAG_GET_FIRMWARE_VERSION;
+    msg[3] = 4;
+    msg[4] = 0;
+    msg[5] = 0;
+    msg[6] = 0;
 
-    msg[0] = sizeof(msg);              // total size
-    msg[1] = 0;                        // request code
-    msg[2] = TAG_GET_FIRMWARE_VERSION; // GET_FIRMWARE_VERSION tag
-    msg[3] = 4;                        // value buffer size
-    msg[4] = 0;                        // request size
-    msg[5] = 0;                        // space for returned version
-    msg[6] = 0;                        // end tag
-
-    if (mbox_property(file_desc, msg) < 0)
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    if (property_impl(file_desc, msg) < 0)
     {
+#else
+    if (real_mbox_property(file_desc, msg) < 0)
+    {
+#endif
         errno = EIO;
         return 0;
     }
-
     return msg[5];
 }
 
 /**
- * @brief Allocates memory via the mailbox interface.
- *
- * Sends the ALLOCATE_MEMORY property tag to request a contiguous block of
- * GPU-accessible memory.
- *
- * @param file_desc File descriptor returned by `mbox_open()`.
- * @param size      Number of bytes to allocate.
- * @param align     Alignment (in bytes) for the allocation.
- * @param flags     Allocation flags (e.g., caching, permissions).
- * @return On success, returns a nonzero handle to the allocated memory.
- *         On failure, returns 0 and sets errno (e.g., to EIO).
+ * @brief Allocates GPU memory (ALLOCATE_MEMORY tag).
+ * @return Nonzero handle on success; 0 + errno=EIO on error.
  */
-uint32_t mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags)
+static uint32_t real_mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags)
 {
     size_t i = 0;
     uint32_t p[32];
-    p[i++] = 0;          // size
-    p[i++] = 0x00000000; // process request
+    p[i++] = 0;
+    p[i++] = 0x00000000;
+    p[i++] = TAG_ALLOCATE_MEMORY;
+    p[i++] = 12;
+    p[i++] = 12;
+    p[i++] = size;
+    p[i++] = align;
+    p[i++] = flags;
+    p[i++] = 0x00000000;
+    p[0] = (uint32_t)(i * sizeof *p);
 
-    p[i++] = TAG_ALLOCATE_MEMORY; // (the tag id)
-    p[i++] = 12;                  // (size of the buffer)
-    p[i++] = 12;                  // (size of the data)
-    p[i++] = size;                // (num bytes? or pages?)
-    p[i++] = align;               // (alignment)
-    p[i++] = flags;               // (MEM_FLAG_L1_NONALLOCATING)
-
-    p[i++] = 0x00000000;  // end tag
-    p[0] = i * sizeof *p; // actual size
-
-    if (mbox_property(file_desc, p) < 0)
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    if (property_impl(file_desc, p) < 0)
     {
+#else
+    if (real_mbox_property(file_desc, p) < 0)
+    {
+#endif
         errno = EIO;
         return 0;
     }
@@ -335,34 +501,29 @@ uint32_t mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags)
 }
 
 /**
- * @brief Frees previously allocated GPU memory.
- *
- * Sends the RELEASE_MEMORY (0x3000f) property tag to the VideoCore GPU,
- * asking it to free the allocation identified by `handle`.
- *
- * @param file_desc  Mailbox file descriptor from mbox_open().
- * @param handle     Handle returned by a prior mem_alloc() call.
- * @return On success, returns 0.
- *         On firmware‐level error, returns a non-zero error code in the return value.
- *         If the underlying ioctl() fails, returns 0 and sets errno to EIO.
+ * @brief Frees GPU memory (RELEASE_MEMORY tag).
+ * @return 0 on success; nonzero on firmware error; 0 + errno=EIO on ioctl error.
  */
-uint32_t mem_free(int file_desc, uint32_t handle)
+static uint32_t real_mem_free(int file_desc, uint32_t handle)
 {
     size_t i = 0;
     uint32_t p[32];
-    p[i++] = 0;          // size
-    p[i++] = 0x00000000; // process request
-
-    p[i++] = TAG_RELEASE_MEMORY; // (the tag id)
-    p[i++] = 4;                  // (size of the buffer)
-    p[i++] = 4;                  // (size of the data)
+    p[i++] = 0;
+    p[i++] = 0x00000000;
+    p[i++] = TAG_RELEASE_MEMORY;
+    p[i++] = 4;
+    p[i++] = 4;
     p[i++] = handle;
+    p[i++] = 0x00000000;
+    p[0] = (uint32_t)(i * sizeof *p);
 
-    p[i++] = 0x00000000;  // end tag
-    p[0] = i * sizeof *p; // actual size
-
-    if (mbox_property(file_desc, p) < 0)
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    if (property_impl(file_desc, p) < 0)
     {
+#else
+    if (real_mbox_property(file_desc, p) < 0)
+    {
+#endif
         errno = EIO;
         return 0;
     }
@@ -370,152 +531,127 @@ uint32_t mem_free(int file_desc, uint32_t handle)
 }
 
 /**
- * @brief Locks allocated memory via the mailbox interface.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle    Handle to the memory to lock.
- * @return On success, the bus address handle (>0). On failure, returns 0 and sets errno.
+ * @brief Locks GPU memory (LOCK_MEMORY tag).
+ * @return Bus‐address handle (>0) on success; 0 + errno set on error.
  */
-uint32_t mem_lock(int file_desc, uint32_t handle)
+static uint32_t real_mem_lock(int file_desc, uint32_t handle)
 {
-    uint32_t p[32];
     size_t i = 0;
+    uint32_t p[32];
+    p[i++] = 0;
+    p[i++] = 0x00000000;
+    p[i++] = TAG_LOCK_MEMORY;
+    p[i++] = 4;
+    p[i++] = 4;
+    p[i++] = handle;
+    p[i++] = 0x00000000;
+    p[0] = (uint32_t)(i * sizeof *p);
 
-    p[i++] = 0;               // total size placeholder
-    p[i++] = 0x00000000;      // process request
-    p[i++] = TAG_LOCK_MEMORY; // TAG_MEM_LOCK
-    p[i++] = 4;               // size of buffer
-    p[i++] = 4;               // size of data
-    p[i++] = handle;          // request payload
-    p[i++] = 0x00000000;      // end tag
-    p[0] = i * sizeof *p;
-
-    if (mbox_property(file_desc, p) < 0)
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    if (property_impl(file_desc, p) < 0)
     {
-        /* ioctl failed: set errno and return 0 so caller can detect error */
+#else
+    if (real_mbox_property(file_desc, p) < 0)
+    {
+#endif
         errno = EIO;
         return 0;
     }
-
-    /* p[5] is the returned bus address handle (or 0 on firmware‐level error) */
     if (p[5] == 0)
     {
-        /* firmware returned a failure code, map it to errno if you like */
         errno = EPROTO;
     }
-
     return p[5];
 }
 
 /**
- * @brief Unlocks a previously locked memory allocation.
- *
- * Sends the UNLOCK_MEMORY (0x3000e) property tag, releasing the bus address
- * lock on the allocation identified by `handle`.
- *
- * @param file_desc  Mailbox file descriptor from mbox_open().
- * @param handle     Handle returned by a prior mem_alloc() call.
- * @return On success, returns 0.
- *         On firmware‐level error, returns a non-zero error code in the return value.
- *         If the underlying ioctl() fails, returns 0 and sets errno to EIO.
+ * @brief Unlocks GPU memory (UNLOCK_MEMORY tag).
+ * @return 0 on success; nonzero on firmware error; 0 + errno=EIO on ioctl error.
  */
-uint32_t mem_unlock(int file_desc, uint32_t handle)
+static uint32_t real_mem_unlock(int file_desc, uint32_t handle)
 {
-    uint32_t p[32];
     size_t i = 0;
-
-    p[i++] = 0;                 // Size
-    p[i++] = 0x00000000;        // Process request
-    p[i++] = TAG_UNLOCK_MEMORY; // Tag ID
-    p[i++] = 4;                 // Size of the buffer
-    p[i++] = 4;                 // Size of the data
+    uint32_t p[32];
+    p[i++] = 0;
+    p[i++] = 0x00000000;
+    p[i++] = TAG_UNLOCK_MEMORY;
+    p[i++] = 4;
+    p[i++] = 4;
     p[i++] = handle;
-    p[i++] = 0x00000000; // End tag
-    p[0] = i * sizeof(*p);
+    p[i++] = 0x00000000;
+    p[0] = (uint32_t)(i * sizeof *p);
 
-    if (mbox_property(file_desc, p) < 0)
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    if (property_impl(file_desc, p) < 0)
     {
+#else
+    if (real_mbox_property(file_desc, p) < 0)
+    {
+#endif
         errno = EIO;
         return 0;
     }
-
     return p[5];
 }
 
 /**
- * @brief Maps physical memory into the process’s address space.
- *
- * Queries the system page size, aligns the requested `base` down to a page
- * boundary, and mmaps `size + offset` bytes from `/dev/mem`.  Returns a
- * pointer adjusted by the offset so that it covers exactly `[base, base+size)`.
- *
- * @param base  Physical base address to map.
- * @param size  Number of bytes to map.
- * @return On success, a pointer to the mapped region corresponding exactly
- *         to `[base, base+size)`.  On failure, returns NULL and sets errno
- *         (e.g. to EIO or whatever open()/mmap() set).
+ * @brief Maps physical memory into user space (/dev/mem).
+ * @return Pointer to mapped region on success; NULL + errno on error.
  */
-void *mapmem(uint32_t base, size_t size)
+static void *real_mapmem(uint32_t base, size_t size)
 {
-    /* Get (and cache) the page size */
-    size_t page = get_page_size();
-
-    /* Compute offset and aligned base as before */
+    /* Determine (and cache) system page size */
+    size_t page;
+    {
+        long tmp = sysconf(_SC_PAGESIZE);
+        page = (tmp < 0) ? 4096 : (size_t)tmp;
+    }
     size_t offset = base % page;
     off_t aligned_base = (off_t)(base - offset);
 
-    /* Open /dev/mem */
-    int fd = get_mem_fd();
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    int fd = get_mem_fd_impl();
+#else
+    int fd = real_get_mem_fd();
+#endif
     if (fd < 0)
     {
-        /* errno set by open() */
+        /* Hook likely set errno already (e.g. EPERM) */
         return NULL;
     }
 
-    /* mmap the full region (including the offset) */
     void *mapping = mmap(
-        NULL, size + offset,
+        NULL,
+        size + offset,
         PROT_READ | PROT_WRITE,
-        MAP_SHARED, fd, aligned_base);
-
+        MAP_SHARED,
+        fd,
+        aligned_base);
     if (mapping == MAP_FAILED)
     {
-        /* translate to errno and return NULL */
         errno = EIO;
         return NULL;
     }
-
-    /* Return a pointer adjusted by offset */
     return (uint8_t *)mapping + offset;
 }
 
 /**
- * @brief Unmaps a region previously mapped by mapmem().
- *
- * Given the pointer returned by mapmem() and the original `size` you
- * requested, this will:
- *  1. Recompute the page‐size and the offset into that page,
- *     by looking at the low bits of `addr`.
- *  2. Subtract the offset to recover the true base pointer.
- *  3. Call munmap() on [base…base+size+offset).
- *
- * @param addr  Pointer returned by mapmem(). May be NULL.
- * @param size  The `size` argument you passed to mapmem().
+ * @brief Unmaps a region previously mapped by real_mapmem().
  */
-void unmapmem(void *addr, size_t size)
+static void real_unmapmem(void *addr, size_t size)
 {
     if (!addr)
         return;
 
-    /* Figure out how far into the page our addr sits */
-    size_t page = get_page_size();
+    size_t page;
+    {
+        long tmp = sysconf(_SC_PAGESIZE);
+        page = (tmp < 0) ? 4096 : (size_t)tmp;
+    }
     uintptr_t addr_int = (uintptr_t)addr;
     size_t offset = addr_int % page;
-
-    /* Recover the original mapping base and total length */
     void *map_base = (void *)(addr_int - offset);
     size_t map_len = size + offset;
 
-    /* Now unmap the entire region */
     munmap(map_base, map_len);
 }

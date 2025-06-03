@@ -23,8 +23,9 @@
 # -----------------------------------------------------------------------------
 
 # Debug flags
-DEBUG := -DDEBUG_MAILBOX
-DEBUG += -DENABLE_TIMEOUTS
+DEBUG :=
+# Compile a “unit-test” binary that never touches real hardware
+# DEBUG += -DENABLE_MBOX_TEST_HOOKS
 
 # C++ Version
 CXXVER := 17

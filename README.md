@@ -1,123 +1,298 @@
-# Raspberry Pi Broadcom Mailbox Communication Library
+# Broadcom-Mailbox C++ Interface
 
-This library provides an interface for communicating with the **Raspberry Pi GPU** via the **mailbox interface**. It enables users to interact with the GPU, allocate memory, execute GPU code, and control QPUs.
+A modern C++17 wrapper around the Raspberry Pi’s GPU mailbox property interface, enabling:
 
-This is NOT my code, it is code I found in some older projects and [Wsprry Pi](https://github.com/lbussy/wsprrypi) depends upon this to work with low-level device control.  This is also modified for my needs, and unused code (`qemu`) has been removed.
+- Opening and closing `/dev/vcio`
+- Querying the GPU firmware version
+- Allocating, locking, unlocking, and freeing GPU-accessible memory
+- Mapping and unmapping physical memory via `/dev/mem`
+- Optional “fake‐hook” mode for unit testing without hardware
 
-## 📌 Features
+This library exposes a convenient, RAII-friendly API (`Mailbox` and `MappedRegion`) that abstracts low-level `ioctl()` calls and `mmap()` operations behind exception-safe C++ methods.
 
-- Open and close the mailbox device.
-- Query the mailbox interface version.
-- Allocate, free, lock, and unlock GPU memory.
-- Map physical memory into the process's address space.
+---
 
-## 📦 Installation
+## Table of Contents
 
-### 1. Clone the Repository
+1. [Features](#features)
+2. [Dependencies](#dependencies)
+3. [Building](#building)
+4. [Installation](#installation)
+5. [Usage](#usage)
+   - [Opening & Closing the Mailbox](#opening--closing-the-mailbox)
+   - [Querying Firmware Version](#querying-firmware-version)
+   - [Allocating & Freeing GPU Memory](#allocating--freeing-gpu-memory)
+   - [Locking & Unlocking GPU Memory](#locking--unlocking-gpu-memory)
+   - [Mapping Physical Memory](#mapping-physical-memory)
+   - [Cleaning Up](#cleaning-up)
+   - [Test-Hook Mode](#test-hook-mode)
+6. [Error Handling](#error-handling)
+7. [Contributing](#contributing)
+8. [License](#license)
+
+---
+
+## Features
+
+- **Singleton Mailbox Interface** (`Mailbox::instance()`):
+  Thread-safe, lazy initialization of `/dev/vcio` file descriptor.
+- **RAII-style MappedRegion**:
+  Wraps `mmap()`/`munmap()` into a move-only class that unmaps on destruction.
+- **GPU Memory Management**:
+  – `mem_alloc()`, `mem_lock()`, `mem_unlock()`, `mem_free()` for contiguous, DMA-capable memory.
+- **Physical Memory Mapping**:
+  – `mapmem()` returns a `MappedRegion` pointing to a byte-aligned view of `/dev/mem`.
+- **Debug Output**:
+  Enable verbose mailbox messages with `Mailbox::set_debug()`.
+- **Fake-Hook Mode**:
+  Install in-library stubs for unit testing on a non-Pi host.
+
+---
+
+## Dependencies
+
+- C++17-compatible compiler (GCC 8+, Clang 10+, MSVC 2017+)
+- Linux kernel headers (for `ioctl`, `/dev/mem`, `/dev/vcio`)
+- Standard C/C++ libraries (no external dependencies)
+
+---
+
+## Building
+
+1. Clone this repository:
+
+	```bash
+	git clone https://github.com/YourUser/Broadcom-Mailbox.git
+	cd Broadcom-Mailbox
+	```
+
+2. Create a build directory and invoke CMake:
+
+	```cpp
+	mkdir build && cd build
+	cmake -DCMAKE_BUILD_TYPE=Debug ..
+	make
+	```
+
+By default, a broadcom-mailbox library and a small `test_mailbox` binary are compiled.
+
+## Installation
+
+To install the library and headers system-wide (⇧ should run as root or via sudo):
 
 ```bash
-git clone https://github.com/lbussy/Broadcom-Mailbox.git
-cd mailbox-library
+cd build
+make install
 ```
 
-### 2. Build the Library
+By default, headers go to `/usr/local/include/broadcom-mailbox` and the shared library to `/usr/local/lib`.
 
-```bash
-make
+---
+
+## Usage
+
+Include the public header and link against `libbroadcom-mailbox`. Below are common usage patterns.
+
+### Opening & Closing the Mailbox
+
+```cpp
+#include <broadcom-mailbox/mailbox.hpp>
+using namespace std;
+
+int main() {
+    // Acquire singleton instance
+    Mailbox &mbox = Mailbox::instance();
+
+    // Open /dev/vcio (throws on failure)
+    int fd = mbox.mbox_open();
+
+    // ... use other methods ...
+
+    // Close (only if it matches the cached FD; otherwise no-op)
+    mbox.mbox_close(fd);
+    return 0;
+}
 ```
 
-### 3. Install System-Wide (Optional)
+### Querying Firmware Version
 
-```bash
-sudo make install
+```cpp
+#include <iostream>
+#include <broadcom-mailbox/mailbox.hpp>
+
+int main() {
+    Mailbox &mbox = Mailbox::instance();
+    int fd = mbox.mbox_open();
+
+    try {
+        uint32_t version = mbox.get_version(fd);
+        std::cout << "GPU firmware version: 0x"
+                  << std::hex << version << std::dec << std::endl;
+    }
+    catch (const std::system_error &e) {
+        std::cerr << "Error fetching version: " << e.what() << "\n";
+    }
+
+    mbox.mbox_close(fd);
+    return 0;
+}
 ```
 
-## 🚀 Usage
+### Allocating & Freeing GPU Memory
 
-### 1. Include the Header in Your Code
+```cpp
+#include <iostream>
+#include <broadcom-mailbox/mailbox.hpp>
 
-```c
-#include "mailbox.h"
+int main() {
+    Mailbox &mbox = Mailbox::instance();
+    int fd = mbox.mbox_open();
+
+    // Allocate 4 KB with 4 KB alignment and appropriate flags (e.g. 0x0C)
+    uint32_t handle = mbox.mem_alloc(fd, 4096, 4096, /*flags=*/0x0C);
+    std::cout << "Allocated handle: 0x" << std::hex << handle << std::dec << "\n";
+
+    // Free the block when done
+    mbox.mem_free(fd, handle);
+
+    mbox.mbox_close(fd);
+    return 0;
+}
 ```
 
-### 2. Open the Mailbox Device\
+### Locking & Unlocking GPU Memory
 
-```c
-int file_desc = mbox_open();
+Locking returns a bus address suitable for DMA. Always unlock after use.
+
+```cpp
+#include <iostream>
+#include <broadcom-mailbox/mailbox.hpp>
+
+int main() {
+    Mailbox &mbox = Mailbox::instance();
+    int fd = mbox.mbox_open();
+
+    uint32_t handle = mbox.mem_alloc(fd, 8192, 4096, /*flags=*/0x0C);
+    if (handle == 0) {
+        std::cerr << "Allocation failed\n";
+        return 1;
+    }
+
+    // Lock to obtain bus address
+    uint32_t bus_addr = mbox.mem_lock(fd, handle);
+    std::cout << "Bus address: 0x" << std::hex << bus_addr << std::dec << "\n";
+
+    // Unlock and free when no longer needed
+    mbox.mem_unlock(fd, handle);
+    mbox.mem_free(fd, handle);
+
+    mbox.mbox_close(fd);
+    return 0;
+}
 ```
 
-### 3. Allocate Memory
+### Mapping Physical Memory
 
-```c
-uint32_t handle = mem_alloc(file_desc, 1024, 4096, 0);
+Map a GPU-accessible region or any physical address (e.g. peripherals):
+
+```cpp
+#include <iostream>
+#include <broadcom-mailbox/mailbox.hpp>
+
+int main() {
+    Mailbox &mbox = Mailbox::instance();
+
+    // Example: map peripheral base 0x3F000000, length 0x1000
+    constexpr uint32_t phys_base = 0x3F000000;
+    constexpr size_t   length    = 0x1000;
+
+    try {
+        MappedRegion region = mbox.mapmem(phys_base, length);
+        auto *ptr = region.get();  // std::byte* or cast to desired type
+        if (!ptr) {
+            throw std::runtime_error("mapmem returned nullptr");
+        }
+
+        // Access mapped memory:
+        volatile uint32_t *reg = reinterpret_cast<volatile uint32_t *>(ptr);
+        std::cout << "First 32-bit word: 0x"
+                  << std::hex << reg[0] << std::dec << "\n";
+
+        // Unmapping is automatic when ‘region’ goes out of scope.
+    }
+    catch (const std::system_error &e) {
+        std::cerr << "mapmem error: " << e.what() << "\n";
+    }
+
+    return 0;
+}
 ```
 
-### 4. Lock and Map the Memory
+### Cleaning Up
 
-```c
-uint32_t mem_addr = mem_lock(file_desc, handle);
-void *mapped_mem = mapmem(mem_addr, 1024);
+To release the cached `/dev/mem` descriptor (optional; also registered with the destructor):
+
+```cpp
+mbox.mem_cleanup();
 ```
 
-### 5. Unlock and Free Memory
+If you close your program normally, the destructor and registered cleanup routines will handle any remaining FDs.
 
-```c
-mem_unlock(file_desc, handle);
-mem_free(file_desc, handle);
+---
+
+## Test-Hook Mode
+
+For unit tests on a non-Pi host (or to simulate failures), call:
+
+```cpp
+Mailbox &mbox = Mailbox::instance();
+mbox.set_test_hooks();   // Installs fake_open, fake_version, etc.
+mbox.set_debug();        // Print fake mailbox messages
+
+int fd = mbox.mbox_open();   // Always returns 100 (fake)
+uint32_t version = mbox.get_version(fd);  // Returns 0x00020000
+// mem_alloc → always returns 123
+// mem_lock  → always returns 0xABC
+// mem_free  → no-op
+// mapmem    → always fails with EPERM
+// …
 ```
 
-### 6. Close the Mailbox
+This allows exercising error paths without actual GPU hardware.
 
-```c
-mbox_close(file_desc);
-```
+---
 
-## 📖 API Reference
+## Error Handling
 
-### Mailbox Functions
+All methods that perform I/O or system calls throw std::system_error on failure:
 
-| Function | Description |
-|----------|------------|
-| `int mbox_open()` | Opens the mailbox device (`/dev/vcio`). |
-| `void mbox_close(int file_desc)` | Closes the mailbox device. |
-| `uint32_t get_version(int file_desc)` | Gets the mailbox interface version. |
+- mbox_open(): Throws if `/dev/vcio` cannot be opened.
+- mbox_close(): Throws if `::close()` on the cached FD fails.
+- get_version(): Throws if `ioctl()` fails or the tag response is invalid.
+- `mem_alloc()`, `mem_lock()`, `mem_free()`, `mem_unlock()`: Throw if the mailbox property call fails or returns an invalid handle/address.
+- `mapmem()`: Throws if opening /dev/mem fails or mmap() fails.
+- `mem_cleanup()`: Throws if the fake hook fails (in test mode).
 
-### Memory Management
+Always wrap calls in `try/catch` if you need to recover or print diagnostic messages.
 
-| Function | Description |
-|----------|------------|
-| `uint32_t mem_alloc(int fd, uint32_t size, uint32_t align, uint32_t flags)` | Allocates memory. |
-| `uint32_t mem_free(int fd, uint32_t handle)` | Frees allocated memory. |
-| `uint32_t mem_lock(int fd, uint32_t handle)` | Locks allocated memory. |
-| `uint32_t mem_unlock(int fd, uint32_t handle)` | Unlocks locked memory. |
-| `void *mapmem(uint32_t base, uint32_t size)` | Maps physical memory into the process's address space. |
-| `void unmapmem(void *addr, uint32_t size)` | Unmaps previously mapped memory. |
+---
 
-## 🔧 Requirements
+## Contributing
 
-- Raspberry Pi running **Raspberry Pi OS (Raspbian)**
-- Kernel **>= 4.1** (uses `/dev/vcio`)
-- **C Compiler** (GCC recommended)
+1. Fork the repository and create a feature branch:
 
-## ⚠️ Notes
+	```bash
+	git checkout -b feature/your-feature
+	```
 
-- You **must** run programs using this library as **root (sudo)** to access `/dev/mem` for memory mapping.
-- Some functions depend on **specific Raspberry Pi GPU firmware versions**.
+2.	Make your changes and add tests as needed.
+3.	Ensure all unit tests pass in both real-hook and fake-hook modes.
+4.	Submit a Pull Request describing your changes and rationale.
 
-## 📜 License
+Please follow the existing code style (K&R braces, 4-space indentation, Doxygen comments).
 
-This project is released under the **BSD 3-Clause License**, as required by Broadcom’s mailbox implementation. See [LICENSE](LICENSE.md) for details.
+---
 
-## 🤝 Contributing
+## License
 
-Contributions are welcome! Please:
-
-1. Fork the repository.
-2. Create a new branch (`git checkout -b feature-name`).
-3. Commit your changes (`git commit -m "Add feature"`).
-4. Push to the branch (`git push origin feature-name`).
-5. Open a **Pull Request**.
-
-## 📞 Support
-
-If you encounter any issues, open an [Issue](https://github.com/lbussy/Broadcom-Mailbox/issues) or start a discussion.
+This project is released under the [MIT License](LICENSE.md), © 2025 Lee C. Bussy. All rights reserved.

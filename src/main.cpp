@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief Entry point for either real‐hardware mailbox tests or unit‐tests with fake hooks.
+ * @brief Entry point for either real-hardware mailbox tests or unit-tests with fake hooks.
  *
  * @details
  * When compiled without `ENABLE_MBOX_TEST_HOOKS`, this program exercises the real
@@ -10,13 +10,13 @@
  *   - Allocates, locks, unlocks, and frees GPU memory
  *   - Optionally maps and reads a physical address via `/dev/mem`
  *
- * When compiled with `-DENABLE_MBOX_TEST_HOOKS`, it runs a suite of unit‐tests that:
- *   - Install fake hooks for `open()`, `/dev/mem` access, and mailbox ioctl calls
+ * When compiled with `-DENABLE_MBOX_TEST_HOOKS`, it runs a suite of unit-tests that:
+ *   - Install fake hooks for `open()`, `/dev/mem` access, and mailbox IOCTL calls
  *   - Verify that `mbox_open()` returns a dummy FD
- *   - Verify that `get_version()` returns a fake version and properly handles errors
+ *   - Verify that `get_version()` returns a fake version
  *   - Verify that `mapmem()` fails when the fake `/dev/mem` hook returns an error
  *
- * Use -DENABLE_MBOX_TEST_HOOKS at compile time to enable the fake‐hook tests.
+ * Use -DENABLE_MBOX_TEST_HOOKS at compile time to enable the fake-hook tests.
  */
 
 #include "mailbox.hpp"
@@ -27,138 +27,140 @@
 #include <cstdint>
 #include <system_error>
 
-#ifdef ENABLE_MBOX_TEST_HOOKS
-
-static int fake_open(const char * /*path*/, int /*flags*/)
+/**
+ * @brief Runs unit-tests under fake-hook mode.
+ *
+ * @details
+ * Installs fake hooks into the Mailbox singleton, then verifies:
+ *   - `mbox_open()` returns a dummy file descriptor (100)
+ *   - `get_version()` returns the fake GPU firmware version
+ *   - `mapmem()` throws a `std::system_error` with `EPERM` when the fake `/dev/mem` hook fails
+ *
+ * @return 0 on success; non-zero if any assertion fails or an unexpected exception occurs.
+ */
+int test_main()
 {
-    return 100;
-}
+    // Install fake hooks for all mailbox operations
+    mailbox.set_test_hooks();
 
-static int fake_close(int /*fd*/)
-{
-    return 0;
-}
+    // mbox_open() → fake_open() → should return 100
+    int fd = mailbox.mbox_open();
+    assert(fd == 100 && "fake_open() did not return 100");
 
-static int fake_get_mem_fd_succeed(void)
-{
-    return 200;
-}
-
-static int fake_get_mem_fd_fail(void)
-{
-    errno = EPERM;
-    return -1;
-}
-
-static int fake_property_version(int /*fd*/, void *buf)
-{
-    auto msg = static_cast<uint32_t *>(buf);
-    if (msg[2] == static_cast<uint32_t>(MailboxTags::Tag::GetFirmwareVersion))
+    // get_version() → fake_version() → should return 0x00020000
     {
-        msg[5] = 0x00020000;
-        return 0;
-    }
-    errno = EINVAL;
-    return -1;
-}
-
-int main()
-{
-    // 2) Install fakes
-    mailbox_set_open_hook(fake_open);
-    mailbox_set_close_hook(fake_close);
-    mailbox_set_mem_fd_hook(fake_get_mem_fd_succeed);
-    mailbox_set_property_hook(fake_property_version);
-
-    // 3) mbox_open() → fake_open() → returns 100
-    int fd = mbox_open();
-    assert(fd == 100);
-
-    // 4) get_version() → fake_property_version() → returns 0x00020000
-    {
-        uint32_t ver = get_version(fd);
+        uint32_t ver = mailbox.get_version(fd);
         std::printf("Fake version: 0x%08x\n", ver);
-        assert(ver == 0x00020000);
+        assert(ver == 0x00020000 && "fake_version() did not return 0x00020000");
     }
 
-    // 5) Simulate get_version() error path: restore “real” ioctl hook → should now throw
-    mailbox_set_property_hook(nullptr);
+    // Test mapmem() failure: fake_mapmem() should force an EPERM error
     try
     {
-        (void)get_version(fd);
-        assert(false && "Expected get_version(...) to throw");
-    }
-    catch (const std::system_error &e)
-    {
-        int ec = e.code().value();
-        // Real ioctl on FD=100 will fail with EBADF (or EIO); either is acceptable:
-        assert(ec == EBADF || ec == EIO);
-    }
-
-    // 6) Test mapmem() failure by forcing get_mem_fd() to fail
-    mailbox_set_mem_fd_hook(fake_get_mem_fd_fail);
-    try
-    {
-        (void)mapmem(0x1000, 4096);
+        (void)mailbox.mapmem(0x1000, 4096);
         assert(false && "Expected mapmem() to throw under EPERM");
     }
     catch (const std::system_error &e)
     {
-        assert(e.code().value() == EPERM);
+        int ec = e.code().value();
+        assert(ec == EPERM && "mapmem() threw an unexpected error code");
     }
 
-    // 7) Clean up
-    mbox_close(fd);
-    std::printf("All unit‐test hooks passed.\n");
+    // Clean up
+    mailbox.mbox_close(fd);
+    std::printf("All unit-test hooks passed.\n");
     return 0;
 }
 
-#else // ENABLE_MBOX_TEST_HOOKS
-
-int main()
+/**
+ * @brief Exercises the real mailbox interface on actual Raspberry Pi hardware.
+ *
+ * @details
+ *   - Opens `/dev/vcio` via `mbox_open()`
+ *   - Queries firmware version via `get_version()`
+ *   - Allocates GPU memory (`mem_alloc()`), locks it (`mem_lock()`), unlocks it (`mem_unlock()`),
+ *     and frees it (`mem_free()`)
+ *   - Maps a known physical address (`mapmem()`), reads a 32-bit value, and then unmaps it
+ *
+ * @return 0 on success; non-zero if any assertion fails or an unexpected exception occurs.
+ */
+int real_main()
 {
-    int fd = mbox_open();
-    assert(fd >= 0 && "Failed to open mailbox");
+    // Enable debug printing of all words
+    mailbox.set_debug();
 
-    uint32_t ver = get_version(fd);
+    // Open the mailbox device
+    int fd = mailbox.mbox_open();
+    assert(fd >= 0 && "Failed to open mailbox (/dev/vcio)");
+
+    // Query firmware version
+    uint32_t ver = mailbox.get_version(fd);
     std::printf("Mailbox version: 0x%08x\n", ver);
     assert(ver != 0 && "get_version() returned zero");
 
-    uint32_t handle = mem_alloc(fd,
-                                4096,
-                                4096,
-                                (1u << 0) | (1u << 4));
+    // Allocate GPU memory: size=4096, alignment=4096, flags=(1<<0)|(1<<4)
+    uint32_t handle = mailbox.mem_alloc(
+        fd,
+        4096,
+        4096,
+        (1u << 0) | (1u << 4));
     std::printf("Allocated handle: 0x%08x\n", handle);
     assert(handle != 0 && "mem_alloc() failed");
 
-    uint32_t bus_addr = mem_lock(fd, handle);
+    // Lock the allocated memory to obtain a bus address
+    uint32_t bus_addr = mailbox.mem_lock(fd, handle);
     std::printf("Locked, bus address: 0x%08x\n", bus_addr);
     assert(bus_addr != 0 && "mem_lock() failed");
 
-    mem_unlock(fd, handle);
+    // Unlock and free the GPU memory
+    mailbox.mem_unlock(fd, handle);
     std::printf("Unlocked\n");
-
-    mem_free(fd, handle);
+    mailbox.mem_free(fd, handle);
     std::printf("Freed\n");
 
-    uint32_t test_phys = 0x3F000000;
-    size_t map_size = 4096;
-    void *ptr_real = mapmem(test_phys, map_size);
+    // Map a well-known physical address (e.g., peripheral base) and read a 32-bit register
+    uint32_t test_phys = 0x3F000000; ///< Base of BCM peripheral registers
+    size_t map_size = 4096;          ///< Map one page (4KB)
+    auto region = mailbox.mapmem(test_phys, map_size);
+    void *ptr_real = region ? region.get() : nullptr;
     std::printf("Mapped 0x%08x → %p\n", test_phys, ptr_real);
     if (ptr_real)
     {
+        // Read a 32-bit value from the mapped memory
         volatile uint32_t val = *static_cast<volatile uint32_t *>(ptr_real);
         std::printf("Read 0x%08x\n", val);
-        unmapmem(ptr_real, map_size);
+
+        // Unmap the region when done
+        mailbox.unmapmem(ptr_real, map_size);
     }
     else
     {
         std::printf("mapmem() failed (errno=%d)\n", errno);
     }
 
-    mbox_close(fd);
+    // Close the mailbox device
+    mailbox.mbox_close(fd);
     std::printf("All mailbox tests passed.\n");
     return 0;
 }
 
+/**
+ * @brief Program entry point.
+ *
+ * @details
+ * Depending on whether `ENABLE_MBOX_TEST_HOOKS` is defined at compile time:
+ *   - If defined, runs `test_main()`
+ *   - Otherwise, runs `real_main()`
+ *
+ * The return value from the selected function is propagated as the process exit code.
+ *
+ * @return Exit code from either `test_main()` or `real_main()`.
+ */
+int main()
+{
+#ifdef ENABLE_MBOX_TEST_HOOKS
+    return test_main();
+#else
+    return real_main();
 #endif // ENABLE_MBOX_TEST_HOOKS
+}

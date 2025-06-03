@@ -24,12 +24,8 @@
 
 # Debug flags
 DEBUG :=
-# Dump every 32-bit word in the mailbox message buffer
-#DEBUG += -DDEBUG_MAILBOX
-# Performs a mailbox-property ioctl with a 1-second timeout
-#DEBUG += -DENABLE_TIMEOUTS
 # Compile a “unit-test” binary that never touches real hardware
-#DEBUG += -DENABLE_MBOX_TEST_HOOKS
+# DEBUG += -DENABLE_MBOX_TEST_HOOKS
 
 # C++ Version
 CXXVER := 17

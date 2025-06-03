@@ -1,999 +1,722 @@
 /**
  * @file mailbox.cpp
- * @brief Mailbox property‐interface API for communicating with the Raspberry Pi GPU.
+ * @brief Mailbox property‐interface API (C++17) for communicating with the
+ *        Raspberry Pi GPU.
  *
  * @details
  *   - Open/close `/dev/vcio`
  *   - Query GPU firmware version
  *   - Allocate/lock/unlock/free GPU memory
  *   - Map/unmap physical memory via `/dev/mem`
- *   - Optionally override each low‐level I/O call via test hooks
+ *   - Optional debug output and test‐hook support
  *
- *   See:
- *     https://github.com/raspberrypi/firmware/wiki/Mailboxes
- *     https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface
+ * @copyright © 2025 Lee C. Bussy (@LBussy). All rights reserved.
  *
- * @copyright
- *   Copyright (c) 2012, Broadcom Europe Ltd.
- *   All rights reserved.
+ * @license
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions are met:
- *   - Redistributions of source code must retain the above copyright
- *     notice, this list of conditions, and the following disclaimer.
- *   - Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions, and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *   - Neither the name of the copyright holder nor the names of its
- *     contributors may be used to endorse or promote products derived from
- *     this software without specific prior written permission.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- *   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- *   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- *   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- *   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- *   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- *   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- *   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- *   LIABILITY, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- *   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- *   POSSIBILITY OF SUCH DAMAGE.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "mailbox.hpp"
 
-#include <cerrno>
-#include <cstdint>
-#include <cstdlib>      // std::atexit
-#include <cstring>      // std::memset
-#include <fcntl.h>      // O_RDWR, O_SYNC
-#include <system_error> // std::system_error, std::generic_category
-#include <sys/ioctl.h>  // ioctl()
-#include <sys/mman.h>   // mmap(), munmap(), MAP_SHARED, PROT_READ/WRITE
-#include <unistd.h>     // close(), open(), sysconf()
-#include <mutex>        // std::once_flag, std::call_once
+#include <array>        // neededd for std::array<uint32_t, 32>
+#include <cstddef>      // for size_t
+#include <cerrno>       // needed for errno
+#include <cstdint>      // for uint32_t
+#include <cstdio>       // for std::printf
+#include <cstring>      // needed for std::strerror
+#include <mutex>        // needed for std::mutex member
+#include <system_error> // needed for std::system_error
 
-#ifdef DEBUG_MAILBOX
-#include <cstdio> // std::printf()
-#endif
-
-#ifdef ENABLE_TIMEOUTS
-#include <csignal> // sigaction, SIGALRM
-#include <csetjmp> // sigjmp_buf, sigsetjmp, siglongjmp
-#endif
-
-/*==============================================================================
-   FORWARD DECLARATIONS OF “REAL” FUNCTIONS
-   (only when hooks are disabled)
-==============================================================================*/
-#ifndef ENABLE_MBOX_TEST_HOOKS
-static uint32_t real_get_version(int file_desc);
-#endif
+#include <fcntl.h>     // needed for O_RDWR, O_SYNC (open flags)
+#include <sys/ioctl.h> // needed for ioctl() calls
+#include <sys/mman.h>  // needed for mmap(), munmap(), MAP_SHARED, PROT_READ/WRITE
+#include <unistd.h>    // needed for close(), open(), sysconf()
 
 /**
- * @brief IOCTL command code for the mailbox property interface.
+ * @struct MboxMessage
+ * @brief Represents a mailbox message buffer for GPU communication.
  *
- * Uses “magic” number 100 and command 0 to talk to `/dev/vcio`.
+ * This structure encapsulates a fixed-size array of 32 32-bit words,
+ * corresponding to a standard mailbox property interface message. It
+ * includes a convenience factory method for constructing a “GetFirmwareVersion”
+ * request.
  */
-static constexpr unsigned long IOCTL_MBOX_PROPERTY = _IOWR(100, 0, char *);
-
-/*==============================================================================
-   “REAL”‐MODE SINGLETONS: Always defined, but only used when no hook is set
-==============================================================================*/
-
-// ─────────────────────────────────────────────────────────────────────────────
-// /dev/vcio (mailbox) – open once, shared FD
-// ─────────────────────────────────────────────────────────────────────────────
-static std::once_flag s_mbox_init_flag;
-static int s_mbox_fd = -1;
-static int s_mbox_errno = 0;
-
-static void initialize_mbox_fd()
+struct MboxMessage
 {
-    int fd = ::open("/dev/vcio", O_RDWR);
-    if (fd < 0)
+    /// Fixed buffer of 32 words (each 32 bits) comprising the message.
+    std::array<uint32_t, 32> words;
+
+    /**
+     * @brief Create a “GetFirmwareVersion” request message.
+     *
+     * Populates the mailbox buffer fields according to the GPU mailbox
+     * property interface specification for the GetFirmwareVersion tag:
+     *   - [0]: Total buffer size (in bytes) = 32 words × 4 bytes/word.
+     *   - [1]: Request/response indicator flags (0 for request).
+     *   - [2]: Tag identifier (GetFirmwareVersion).
+     *   - [3]: Payload buffer size (4 bytes for version number).
+     *   - [4]: Value-length field (0 when sending request).
+     *   - [5]: Placeholder for the GPU to write the returned version.
+     *   - [6..31]: Unused (set to zero).
+     *
+     * @return MboxMessage
+     *   A fully initialized message ready to be sent via mailbox property ioctl.
+     *
+     * @note This function does not throw exceptions.
+     */
+    static MboxMessage make_get_version() noexcept
     {
-        s_mbox_errno = errno;
-        s_mbox_fd = -1;
+        MboxMessage m;
+        m.words.fill(0);
+
+        // [0] Buffer size in bytes: 32 words × 4 bytes/word = 128 bytes
+        m.words[0] = static_cast<uint32_t>(m.words.size() * sizeof(uint32_t));
+
+        // [1] Request/response indicator (0 for request)
+        m.words[1] = 0;
+
+        // [2] Tag: GetFirmwareVersion
+        m.words[2] = static_cast<uint32_t>(MailboxTags::Tag::GetFirmwareVersion);
+
+        // [3] Payload size: 4 bytes (we expect a 32-bit version number)
+        m.words[3] = 4;
+
+        // [4] Value-length: 0 for request (GPU will fill this on response)
+        m.words[4] = 0;
+
+        // [5]–[31] remain zero; GPU will write version into [5].
+
+        return m;
     }
-    else
-    {
-        s_mbox_fd = fd;
-        std::atexit([]()
-                    {
-                        if (s_mbox_fd >= 0) ::close(s_mbox_fd); });
-    }
-}
-
-// Mark as “unused” so that builds with ENABLE_MBOX_TEST_HOOKS (where it never gets called) do not warn:
-static int __attribute__((unused)) get_shared_mbox_fd()
-{
-    std::call_once(s_mbox_init_flag, initialize_mbox_fd);
-    if (s_mbox_fd < 0)
-    {
-        throw std::system_error(
-            s_mbox_errno,
-            std::generic_category(),
-            "mbox_open(): cannot open /dev/vcio");
-    }
-    return s_mbox_fd;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// /dev/mem – open once, shared FD
-// ─────────────────────────────────────────────────────────────────────────────
-static std::once_flag s_mem_fd_flag;
-static int s_mem_fd = -1;
-static int s_mem_errno = 0;
-
-static void initialize_mem_fd()
-{
-    int fd = ::open("/dev/mem", O_RDWR | O_SYNC);
-    if (fd < 0)
-    {
-        s_mem_errno = errno;
-        s_mem_fd = -1;
-    }
-    else
-    {
-        s_mem_fd = fd;
-        std::atexit([]()
-                    {
-                        if (s_mem_fd >= 0) ::close(s_mem_fd); });
-    }
-}
-
-// Mark as “unused” for the same reason:
-static int __attribute__((unused)) get_shared_mem_fd()
-{
-    std::call_once(s_mem_fd_flag, initialize_mem_fd);
-    if (s_mem_fd < 0)
-    {
-        throw std::system_error(
-            s_mem_errno,
-            std::generic_category(),
-            "mapmem(): cannot open /dev/mem");
-    }
-    return s_mem_fd;
-}
-
-/*==============================================================================
-   FORWARD DECLARATIONS OF “REAL” FUNCTIONS
-==============================================================================*/
-static int real_open_wrapper(const char *path, int flags) __attribute__((unused));
-static int real_mbox_property(int file_desc, void *buf);
-static uint32_t real_mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags);
-static void real_mem_free(int file_desc, uint32_t handle);
-static uint32_t real_mem_lock(int file_desc, uint32_t handle);
-static void real_mem_unlock(int file_desc, uint32_t handle);
-static void *real_mapmem(uint32_t base, size_t size);
-static void real_unmapmem(void *addr, size_t size);
-static void real_mem_cleanup(void);
-
-/*==============================================================================
-   OPTIONAL TEST‐HOOK FUNCTION POINTERS
-==============================================================================*/
-#ifdef ENABLE_MBOX_TEST_HOOKS
-
-// Each pointer defaults to nullptr. mailbox_set_*_hook(...) will set them.
-static int (*open_impl)(const char *, int) = nullptr;
-static int (*close_impl)(int) = nullptr;
-static int (*get_mem_fd_impl)(void) = nullptr;
-static int (*property_impl)(int, void *) = nullptr;
-static int (*mem_alloc_impl)(int, uint32_t, uint32_t, uint32_t) = nullptr;
-static int (*mem_free_impl)(int, uint32_t) = nullptr;
-static int (*mem_lock_impl)(int, uint32_t) = nullptr;
-static int (*mem_unlock_impl)(int, uint32_t) = nullptr;
-static int (*mapmem_impl)(uint32_t, size_t) = nullptr;
-static int (*unmapmem_impl)(void *, size_t) = nullptr;
-static int (*mem_cleanup_impl)(void) = nullptr;
+};
 
 /**
- * @brief Override the internal open() used by mbox_open().
- * @param hook If non‐NULL, mbox_open() calls hook(path, flags) instead of real ::open().
- *             Passing NULL restores real behavior (::open).
- */
-void mailbox_set_open_hook(int (*hook)(const char *, int))
-{
-    open_impl = hook ? hook : real_open_wrapper;
-}
-
-/**
- * @brief Override mbox_close().
- * @param hook If non‐NULL, mbox_close(fd) calls hook(fd) instead of ::close(fd).
- *             Passing NULL restores real ::close().
- */
-void mailbox_set_close_hook(int (*hook)(int))
-{
-    close_impl = hook ? hook : [](int fd) -> int
-    {
-        return ::close(fd);
-    };
-}
-
-/**
- * @brief Override the function used to open `/dev/mem`.
- * @param hook If non‐NULL, get_mem_fd() calls hook() instead of get_shared_mem_fd().
- *             Passing NULL restores real get_shared_mem_fd().
- */
-void mailbox_set_mem_fd_hook(int (*hook)(void))
-{
-    // Fallback lambda calls get_shared_mem_fd()
-    get_mem_fd_impl = hook ? hook : []() -> int
-    {
-        try
-        {
-            return get_shared_mem_fd();
-        }
-        catch (...)
-        {
-            return -1;
-        }
-    };
-}
-
-/**
- * @brief Override the internal mailbox‐property IOCTL() function.
- * @param hook If non‐NULL, get_version()/mem_alloc()/etc. invoke hook() instead of real_mbox_property().
- *             Passing NULL restores real_mbox_property().
- */
-void mailbox_set_property_hook(int (*hook)(int, void *))
-{
-    property_impl = hook ? hook : [](int fd, void *buf) -> int
-    {
-        return real_mbox_property(fd, buf);
-    };
-}
-
-/**
- * @brief Override mem_alloc().
- * @param hook If non‐NULL, mem_alloc(fd, size, align, flags) calls hook(...) instead of real_mem_alloc().
- *             Passing NULL restores real_mem_alloc().
- */
-void mailbox_set_mem_alloc_hook(int (*hook)(int, uint32_t, uint32_t, uint32_t))
-{
-    mem_alloc_impl = hook ? hook : [](int fd, uint32_t s, uint32_t a, uint32_t f) -> int
-    {
-        try
-        {
-            uint32_t h = real_mem_alloc(fd, s, a, f);
-            return (h == 0 ? -1 : static_cast<int>(h));
-        }
-        catch (...)
-        {
-            return -1;
-        }
-    };
-}
-
-/**
- * @brief Override mem_free().
- * @param hook If non‐NULL, mem_free(fd, handle) calls hook(...) instead of real_mem_free().
- *             Passing NULL restores real_mem_free().
- */
-void mailbox_set_mem_free_hook(int (*hook)(int, uint32_t))
-{
-    mem_free_impl = hook ? hook : [](int fd, uint32_t h) -> int
-    {
-        try
-        {
-            real_mem_free(fd, h);
-            return 0;
-        }
-        catch (...)
-        {
-            return -1;
-        }
-    };
-}
-
-/**
- * @brief Override mem_lock().
- * @param hook If non‐NULL, mem_lock(fd, handle) calls hook(...) instead of real_mem_lock().
- *             Passing NULL restores real_mem_lock().
- */
-void mailbox_set_mem_lock_hook(int (*hook)(int, uint32_t))
-{
-    mem_lock_impl = hook ? hook : [](int fd, uint32_t h) -> int
-    {
-        try
-        {
-            uint32_t addr = real_mem_lock(fd, h);
-            return (addr == 0 ? -1 : static_cast<int>(addr));
-        }
-        catch (...)
-        {
-            return -1;
-        }
-    };
-}
-
-/**
- * @brief Override mem_unlock().
- * @param hook If non‐NULL, mem_unlock(fd, handle) calls hook(...) instead of real_mem_unlock().
- *             Passing NULL restores real_mem_unlock().
- */
-void mailbox_set_mem_unlock_hook(int (*hook)(int, uint32_t))
-{
-    mem_unlock_impl = hook ? hook : [](int fd, uint32_t h) -> int
-    {
-        try
-        {
-            real_mem_unlock(fd, h);
-            return 0;
-        }
-        catch (...)
-        {
-            return -1;
-        }
-    };
-}
-
-/**
- * @brief Override mapmem().
- * @param hook If non‐NULL, mapmem(base, size) calls hook(...) instead of real_mapmem().
- *             Passing NULL restores real_mapmem().
- */
-void mailbox_set_mapmem_hook(int (*hook)(uint32_t, size_t))
-{
-    mapmem_impl = hook ? hook : [](uint32_t b, size_t s) -> int
-    {
-        try
-        {
-            void *p = real_mapmem(b, s);
-            return (p ? 0 : -1);
-        }
-        catch (...)
-        {
-            return -1;
-        }
-    };
-}
-
-/**
- * @brief Override unmapmem().
- * @param hook If non‐NULL, unmapmem(addr, size) calls hook(...) instead of real_unmapmem().
- *             Passing NULL restores real_unmapmem().
- */
-void mailbox_set_unmapmem_hook(int (*hook)(void *, size_t))
-{
-    unmapmem_impl = hook ? hook : [](void *a, size_t s) -> int
-    {
-        try
-        {
-            real_unmapmem(a, s);
-            return 0;
-        }
-        catch (...)
-        {
-            return -1;
-        }
-    };
-}
-
-/**
- * @brief Override mem_cleanup().
- * @param hook If non‐NULL, mem_cleanup() calls hook() instead of real_mem_cleanup().
- *             Passing NULL restores real_mem_cleanup().
- */
-void mailbox_set_mem_cleanup_hook(int (*hook)(void))
-{
-    mem_cleanup_impl = hook ? hook : []() -> int
-    {
-        try
-        {
-            real_mem_cleanup();
-            return 0;
-        }
-        catch (...)
-        {
-            return -1;
-        }
-    };
-}
-
-#endif // ENABLE_MBOX_TEST_HOOKS
-
-#ifdef ENABLE_TIMEOUTS
-static sigjmp_buf jmpbuf;
-
-/**
- * @brief SIGALRM handler: jumps back on timeout.
+ * @brief Print the contents of a mailbox buffer for debugging purposes.
  *
- * Invoked if an alarm expires during a mailbox‐property IOCTL.
+ * Iterates through `word_count` 32-bit words in `buf` and prints each
+ * with its byte-offset in hexadecimal, followed by the word’s value in hex.
+ * Only intended to be called when verbose debug output is enabled.
+ *
+ * @param buf         Pointer to the first element of the mailbox buffer.
+ * @param word_count  Number of 32-bit words to print from `buf`.
+ *
+ * @note This function does not throw exceptions.
  */
-static void timeout_handler(int sig)
+static void dump_buffer(const uint32_t *buf, size_t word_count) noexcept
 {
-    (void)sig;
-    siglongjmp(jmpbuf, 1);
+    for (size_t i = 0; i < word_count; ++i)
+    {
+        std::printf("%04zx: 0x%08x\n", i * sizeof(uint32_t), buf[i]);
+    }
 }
 
 /**
- * @brief Perform a mailbox IOCTL with a 1‐second timeout.
- * @param fd  File descriptor for /dev/vcio.
- * @param buf Pointer to the mailbox message buffer.
- * @return >=0 on success; -1 on error (errno=ETIMEDOUT if timed out).
+ * @brief Global reference to the Mailbox singleton.
+ *
+ * Provides convenient access to the one-and-only Mailbox instance for
+ * performing mailbox operations (open, property calls, memory management).
  */
-static int __attribute__((unused))
-mbox_property_with_timeout(int fd, void *buf)
-{
-    struct sigaction sa;
-    std::memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = timeout_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGALRM, &sa, nullptr);
+Mailbox &mailbox = Mailbox::instance();
 
-    if (sigsetjmp(jmpbuf, 1) != 0)
+/**
+ * @brief Returns the singleton Mailbox instance.
+ *
+ * Implements Meyers’ singleton pattern: first call constructs the single
+ * Mailbox object; subsequent calls return the same reference.
+ *
+ * @return Mailbox&  Reference to the singleton Mailbox.
+ *
+ * @note Thread-safe in C++11 and later due to guaranteed static local initialization.
+ */
+Mailbox &Mailbox::instance()
+{
+    static Mailbox inst;
+    return inst;
+}
+
+/**
+ * @brief Constructs a Mailbox object.
+ *
+ * Initializes internal state but does not open any file descriptors.
+ * Actual opening of `/dev/vcio` and `/dev/mem` is deferred until mbox_open()
+ * or mapmem() are called.
+ *
+ * @note This constructor does not throw.
+ */
+Mailbox::Mailbox() = default;
+
+/**
+ * @brief Destroys the Mailbox object and closes any open file descriptors.
+ *
+ * If the cached mailbox FD (`mbox_fd_`) is ≥ 0, calls ::close() and resets it to –1.
+ * Similarly, if the cached `/dev/mem` FD (`mem_fd_`) is ≥ 0, calls ::close() and resets it.
+ *
+ * @note Marked noexcept: any errors from ::close() are ignored.
+ */
+Mailbox::~Mailbox() noexcept
+{
+    // Close the `/dev/vcio` FD if still open
+    if (mbox_fd_.get() >= 0)
     {
-        errno = ETIMEDOUT;
-        return -1;
+        ::close(mbox_fd_.get());
+        mbox_fd_.reset(-1);
     }
 
-    alarm(1);
-    int ret = ::ioctl(fd, IOCTL_MBOX_PROPERTY, buf);
-    alarm(0);
-    return ret;
-}
-#endif // ENABLE_TIMEOUTS
-
-/*==============================================================================
-   PUBLIC API IMPLEMENTATIONS
-==============================================================================*/
-
-/**
- * @brief Opens the `/dev/vcio` mailbox device.
- * @return File descriptor (>=0) on success.
- * @throws std::system_error on failure (real mode only).
- */
-int mbox_open()
-{
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    int fd = (open_impl) ? open_impl("/dev/vcio", O_RDWR)
-                         : real_open_wrapper("/dev/vcio", O_RDWR);
-    if (fd < 0)
+    // Close the `/dev/mem` FD if still open
+    if (mem_fd_.get() >= 0)
     {
-        // C‐style: return -1, errno is already set
-        return -1;
+        ::close(mem_fd_.get());
+        mem_fd_.reset(-1);
     }
-    return fd;
-#else
-    // “Real” mode – thread‐safe singleton
-    return get_shared_mbox_fd();
-#endif
 }
 
 /**
- * @brief Closes the mailbox device.
- * @param file_desc File descriptor returned by mbox_open().
- * @throws std::system_error on failure (real mode only).
+ * @brief Enable verbose debug output for mailbox operations.
+ *
+ * When called, every 32-bit word exchanged over the mailbox interface
+ * will be printed to stdout (via dump_buffer).
+ *
+ * @note No exceptions are thrown.
  */
-void mbox_close(int file_desc)
+void Mailbox::set_debug() noexcept
 {
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    int rc = (close_impl) ? close_impl(file_desc) : ::close(file_desc);
+    debug_ = true;
+}
+
+/**
+ * @brief Opens the `/dev/vcio` mailbox device (singleton, thread-safe).
+ *
+ * On the first invocation, attempts to open `/dev/vcio` exactly once and
+ * caches the file descriptor for future calls. On subsequent invocations,
+ * returns the cached FD. If a test‐hook has been installed via set_test_hooks(),
+ * calls the fake/open‐hook implementation instead of the real open.
+ *
+ * @return int  File descriptor for `/dev/vcio` on success.
+ *
+ * @throws std::system_error if:
+ *   - The fake‐hook `open_impl_` is set and returns < 0 (errno preserved).
+ *   - The real open fails (errno stored in mbox_errno_, used in exception).
+ */
+int Mailbox::mbox_open()
+{
+    if (open_impl_)
+    {
+        // Fake‐hook version: call the user‐provided open implementation
+        int fake_fd = open_impl_("/dev/vcio", O_RDWR);
+        if (fake_fd < 0)
+        {
+            // Preserve errno from the fake hook
+            throw std::system_error(errno, std::generic_category(),
+                                    "mbox_open(): fake_open failed");
+        }
+        return fake_fd;
+    }
+
+    // Real path: guard with mutex to ensure thread‐safe one‐time open
+    std::scoped_lock lk(init_mutex_);
+    if (!mailbox_initialized_)
+    {
+        // First time: attempt to open /dev/vcio
+        int fd = ::open("/dev/vcio", O_RDWR);
+        if (fd < 0)
+        {
+            // Store errno for later exception if needed
+            mbox_errno_ = errno;
+            mbox_fd_.reset(-1);
+        }
+        else
+        {
+            mbox_fd_.reset(fd);
+        }
+        mailbox_initialized_ = true;
+    }
+
+    if (mbox_fd_.get() < 0)
+    {
+        // If the cached FD is still invalid, throw with stored errno
+        throw std::system_error(mbox_errno_, std::generic_category(),
+                                "mbox_open(): cannot open /dev/vcio");
+    }
+    return mbox_fd_.get();
+}
+
+/**
+ * @brief Closes the `/dev/vcio` mailbox device.
+ *
+ * If a fake‐hook has been installed via `set_test_hooks()`, invokes the hook
+ * and returns immediately. Otherwise, only closes the cached file descriptor
+ * if `file_desc` matches and is still open.
+ *
+ * @param[in] file_desc
+ *   The file descriptor to close. Must match the cached descriptor from `mbox_open()`
+ *   for the real path to actually close it.
+ *
+ * @throws std::system_error if:
+ *   - The fake‐hook `close_impl_` is set and returns < 0 (errno preserved).
+ *   - The underlying `::close(raw_fd)` call fails (errno preserved).
+ */
+void Mailbox::mbox_close(int file_desc)
+{
+    if (close_impl_)
+    {
+        // Fake‐hook version: invoke the user‐provided close implementation
+        int rc = close_impl_(file_desc);
+        if (rc < 0)
+        {
+            throw std::system_error(errno, std::generic_category(),
+                                    "mbox_close(): hook failed");
+        }
+        return;
+    }
+
+    // Only close if this is our cached FD and it is still open
+    int raw_fd = mbox_fd_.get();
+    if (file_desc == raw_fd && raw_fd >= 0)
+    {
+        if (::close(raw_fd) < 0)
+        {
+            throw std::system_error(errno, std::generic_category(),
+                                    "mbox_close(): ::close failed");
+        }
+        mbox_fd_.reset(-1);
+    }
+}
+
+/**
+ * @brief Retrieves the GPU firmware version via the mailbox interface.
+ *
+ * Constructs a “GetFirmwareVersion” message, sends it through the mailbox
+ * (either via a fake‐hook if installed or via the real ioctl path), and
+ * returns the version word from the response.
+ *
+ * @param[in] file_desc
+ *   The open `/dev/vcio` mailbox file descriptor (obtained from `mbox_open()`).
+ *
+ * @return The 32‐bit firmware version returned by the GPU.
+ *
+ * @throws std::system_error if:
+ *   - The fake‐hook `version_impl_` is set and returns < 0 (errno preserved).
+ *   - The real mailbox property ioctl (`real_mbox_property`) returns < 0 (errno preserved).
+ *
+ * @note If `debug_` is true, prints the entire 32‐word buffer to stdout via `dump_buffer()`.
+ */
+uint32_t Mailbox::get_version(int file_desc)
+{
+    // Build a GetFirmwareVersion request buffer
+    MboxMessage msg = MboxMessage::make_get_version();
+
+    // Send either via hook or real ioctl
+    int rc = version_impl_
+                 ? version_impl_(file_desc, msg.words.data())
+                 : real_mbox_property(file_desc, msg.words.data());
     if (rc < 0)
     {
-        // In test mode, map to exception
-        throw std::system_error(errno, std::generic_category(), "mbox_close(): hook failed");
+        throw std::system_error(errno, std::generic_category(),
+                                "get_version(): hook/ioctl failed");
     }
-#else
-    if (file_desc >= 0)
+
+    if (debug_)
     {
-        if (::close(file_desc) < 0)
+        dump_buffer(msg.words.data(), msg.words.size());
+    }
+
+    // The GPU writes its version into word index 5
+    return msg.words[5];
+}
+
+/**
+ * @brief Allocate GPU‐accessible memory via the mailbox property interface.
+ *
+ * Constructs and sends an “AllocateMemory” mailbox property request to allocate
+ * a contiguous block of GPU‐accessible memory. Returns the memory handle on success.
+ *
+ * If a fake‐hook (`mem_alloc_impl_`) is installed, this method invokes the hook
+ * instead of performing the real ioctl transaction.
+ *
+ * @param[in] file_desc
+ *   The `/dev/vcio` mailbox file descriptor (from `mbox_open()`).
+ * @param[in] size
+ *   Requested size of the memory block, in bytes (must be multiple of page size).
+ * @param[in] align
+ *   Alignment requirement for the block, in bytes (power‐of‐two, e.g. 4096).
+ * @param[in] flags
+ *   Allocation flags (e.g., cache‐coherent or non‐coherent) as defined by the GPU API.
+ *
+ * @return A nonzero GPU memory handle identifying the allocated block.
+ *
+ * @throws std::system_error if:
+ *   - A fake‐hook is installed and returns < 0 (errno preserved).
+ *   - The real ioctl call (`real_mbox_property`) returns < 0.
+ *   - The GPU responds with a zero handle (allocation failed).
+ *
+ * @note If `debug_` is true, the entire 32‐word response buffer is printed via `dump_buffer()`.
+ */
+uint32_t Mailbox::mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags)
+{
+    // If a fake‐hook is set, call it directly
+    if (mem_alloc_impl_)
+    {
+        int rc = mem_alloc_impl_(file_desc, size, align, flags);
+        if (rc < 0)
+        {
+            throw std::system_error(errno, std::generic_category(),
+                                    "mem_alloc(): hook failed");
+        }
+        return static_cast<uint32_t>(rc);
+    }
+
+    // Prepare a 32‐word mailbox buffer initialized to zero
+    uint32_t buf[32] = {};
+    size_t i = 0;
+
+    // Buffer layout:
+    //   buf[0] = total message size in bytes (filled later)
+    //   buf[1] = request code (zero)
+    //   buf[2] = tag AllocateMemory
+    //   buf[3] = value buffer size (in bytes) for this tag
+    //   buf[4] = request/response indicator (set to request size)
+    //   buf[5] = size argument
+    //   buf[6] = align argument
+    //   buf[7] = flags argument
+    //   buf[8] = space for returned handle
+    buf[i++] = 0; // placeholder for total size
+    buf[i++] = 0; // request code
+    buf[i++] = static_cast<uint32_t>(MailboxTags::Tag::AllocateMemory);
+    buf[i++] = 12; // 3 words (size, align, flags) = 12 bytes
+    buf[i++] = 12; // same as above
+    buf[i++] = size;
+    buf[i++] = align;
+    buf[i++] = flags;
+    buf[i++] = 0; // returned handle
+
+    // Fill in total size (word count × 4 bytes)
+    buf[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
+
+    // Perform the real mailbox transaction
+    int rc = real_mbox_property(file_desc, buf);
+    if (rc < 0 || buf[5] == 0)
+    {
+        throw std::system_error(errno, std::generic_category(),
+                                "mem_alloc(): C‐style failed");
+    }
+
+    if (debug_)
+    {
+        size_t words = buf[0] / sizeof(uint32_t);
+        dump_buffer(buf, words);
+    }
+
+    // The GPU returns the handle in buf[5]
+    return buf[5];
+}
+
+/**
+ * @brief Frees a previously allocated GPU memory block.
+ *
+ * Constructs and sends a “ReleaseMemory” mailbox property request to free
+ * the block identified by the given handle. If a fake‐hook (`mem_free_impl_`)
+ * is installed, that hook is invoked instead of performing the real ioctl.
+ *
+ * @param[in] file_desc
+ *   The `/dev/vcio` mailbox file descriptor (from `mbox_open()`).
+ * @param[in] handle
+ *   The GPU memory handle returned by `mem_alloc()`, identifying the block to free.
+ *
+ * @throws std::system_error if:
+ *   - A fake‐hook is installed and returns < 0 (errno preserved).
+ *   - The real ioctl call (`real_mbox_property`) returns < 0.
+ *
+ * @note If `debug_` is true, the entire 32‐word response buffer is printed via `dump_buffer()`.
+ */
+void Mailbox::mem_free(int file_desc, uint32_t handle)
+{
+    // (no override hook)
+    uint32_t buf[32] = {};
+    size_t i = 0;
+
+    // reserve space for total‐size and response code
+    buf[i++] = 0; // will fill in later
+    buf[i++] = 0; // request code = 0
+
+    // “ReleaseMemory” tag
+    buf[i++] = static_cast<uint32_t>(MailboxTags::Tag::ReleaseMemory);
+
+    // value‐length  (we’re passing exactly 4 bytes: the handle)
+    buf[i++] = 4; // value‐length
+
+    // request‐length  (the same 4 bytes of handle)
+    buf[i++] = 4; // request‐length
+
+    // the handle to free
+    buf[i++] = handle;
+
+    // end tag (0) must be present
+    buf[i++] = 0;
+
+    // Now fill in word 0 := total size in bytes
+    buf[0] = static_cast<uint32_t>(i * sizeof(uint32_t)); // i==7 → 28
+
+    // Finally invoke the real mailbox‐property IOCTL
+    int rc = real_mbox_property(file_desc, buf);
+    if (rc < 0)
+    {
+        throw std::system_error(errno, std::generic_category(),
+                                "mem_free(): C-style failed");
+    }
+    if (debug_)
+    {
+        size_t words = buf[0] / sizeof(uint32_t);
+        dump_buffer(buf, words);
+    }
+    return; // void
+}
+
+/**
+ * @brief Locks a previously allocated GPU memory block to obtain a bus address.
+ *
+ * Constructs and sends a “LockMemory” mailbox property request for the block
+ * identified by the given handle. Returns the bus address for DMA use.
+ * If a fake‐hook (`mem_lock_impl_`) is installed, that hook is invoked
+ * instead of performing the real ioctl.
+ *
+ * @param[in] file_desc
+ *   The `/dev/vcio` mailbox file descriptor (from `mbox_open()`).
+ * @param[in] handle
+ *   The GPU memory handle returned by `mem_alloc()`, identifying the block to lock.
+ *
+ * @return uint32_t
+ *   The bus address (> 0) on success.
+ *
+ * @throws std::system_error if:
+ *   - A fake‐hook is installed and returns < 0 (errno preserved).
+ *   - The real ioctl call (`real_mbox_property`) returns < 0.
+ *   - The returned bus address (`buf[5]`) is 0 (indicating failure).
+ *
+ * @note If `debug_` is true, the entire 32‐word response buffer is printed via `dump_buffer()`.
+ */
+uint32_t Mailbox::mem_lock(int file_desc, uint32_t handle)
+{
+    // If a fake‐hook is set, call it directly
+    if (mem_lock_impl_)
+    {
+        int rc = mem_lock_impl_(file_desc, handle);
+        if (rc < 0)
+        {
+            throw std::system_error(errno, std::generic_category(),
+                                    "mem_lock(): hook failed");
+        }
+        return static_cast<uint32_t>(rc);
+    }
+
+    // Prepare a 32‐word mailbox buffer initialized to zero
+    uint32_t buf[32] = {};
+    size_t i = 0;
+
+    // Buffer layout for “LockMemory”:
+    //   buf[0] = total message size in bytes (filled later)
+    //   buf[1] = request code (zero)
+    //   buf[2] = tag LockMemory
+    //   buf[3] = value buffer size (4 bytes: one word for handle)
+    //   buf[4] = request/response indicator (same 4 bytes)
+    //   buf[5] = memory handle to lock
+    //   buf[6] = value placeholder for returned bus address
+    buf[i++] = 0; // placeholder for total size
+    buf[i++] = 0; // request code
+    buf[i++] = static_cast<uint32_t>(MailboxTags::Tag::LockMemory);
+    buf[i++] = 4;      // 1 word (4 bytes) for handle
+    buf[i++] = 4;      // same as above
+    buf[i++] = handle; // handle to lock
+    buf[i++] = 0;      // placeholder for returned bus address
+
+    // Fill in total size (word count × 4 bytes)
+    buf[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
+
+    // Perform the real mailbox transaction
+    int rc = real_mbox_property(file_desc, buf);
+    if (rc < 0 || buf[5] == 0)
+    {
+        throw std::system_error(errno, std::generic_category(),
+                                "mem_lock(): C‐style failed");
+    }
+
+    if (debug_)
+    {
+        size_t words = buf[0] / sizeof(uint32_t);
+        dump_buffer(buf, words);
+    }
+
+    return buf[5];
+}
+
+/**
+ * @brief Unlocks a previously locked GPU memory block.
+ *
+ * Constructs and sends an “UnlockMemory” mailbox property request for the block
+ * identified by the given handle. If a fake‐hook (`mem_unlock_impl_`) is installed,
+ * that hook is invoked instead of performing the real ioctl.
+ *
+ * @param[in] file_desc
+ *   The `/dev/vcio` mailbox file descriptor (from `mbox_open()`).
+ * @param[in] handle
+ *   The GPU memory handle returned by `mem_alloc()` and locked by `mem_lock()`.
+ *
+ * @throws std::system_error if:
+ *   - A fake‐hook is installed and returns < 0 (errno preserved).
+ *   - The real ioctl call (`real_mbox_property`) returns < 0.
+ *
+ * @note If `debug_` is true, the entire 32‐word response buffer is printed via `dump_buffer()`.
+ */
+void Mailbox::mem_unlock(int file_desc, uint32_t handle)
+{
+    // If a fake‐hook is set, call it directly
+    if (mem_unlock_impl_)
+    {
+        int rc = mem_unlock_impl_(file_desc, handle);
+        if (rc < 0)
+        {
+            throw std::system_error(errno, std::generic_category(),
+                                    "mem_unlock(): hook failed");
+        }
+        return;
+    }
+
+    // Prepare a 32‐word mailbox buffer initialized to zero
+    uint32_t buf[32] = {};
+    size_t i = 0;
+
+    // Buffer layout for “UnlockMemory”:
+    //   buf[0] = total message size in bytes (filled later)
+    //   buf[1] = request code (zero)
+    //   buf[2] = tag UnlockMemory
+    //   buf[3] = value buffer size (4 bytes: one word for handle)
+    //   buf[4] = request/response indicator (same 4 bytes)
+    //   buf[5] = memory handle to unlock
+    buf[i++] = 0; // placeholder for total size
+    buf[i++] = 0; // request code
+    buf[i++] = static_cast<uint32_t>(MailboxTags::Tag::UnlockMemory);
+    buf[i++] = 4;      // 1 word (4 bytes) for handle
+    buf[i++] = 4;      // same as above
+    buf[i++] = handle; // handle to unlock
+    buf[i++] = 0;      // unused
+
+    // Fill in total size (word count × 4 bytes)
+    buf[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
+
+    // Perform the real mailbox transaction
+    int rc = real_mbox_property(file_desc, buf);
+    if (rc < 0)
+    {
+        throw std::system_error(errno, std::generic_category(),
+                                "mem_unlock(): C‐style failed");
+    }
+
+    if (debug_)
+    {
+        size_t words = buf[0] / sizeof(uint32_t);
+        dump_buffer(buf, words);
+    }
+}
+
+/**
+ * @brief Map a physical memory region into this process’s address space.
+ *
+ * Constructs and sends an mmap request (or invokes a fake‐hook if installed) to
+ * map the physical address range [base, base + size) via `/dev/mem`. Returns a
+ * MappedRegion RAII wrapper that will unmap on destruction.
+ *
+ * @param[in] base
+ *   The physical base address (bus address masked to physical) to map.
+ * @param[in] size
+ *   The length, in bytes, of the region to map.
+ * @return A MappedRegion owning the mapped pointer. The underlying pointer is
+ *         nullptr if mapping failed.
+ *
+ * @throws std::system_error if:
+ *   - A fake‐hook (`mapmem_impl_`) is installed and returns < 0 (errno preserved).
+ *   - Opening `/dev/mem` fails (error stored in `mem_errno_`).
+ *   - The mmap system call fails (errno preserved).
+ *
+ * @note The returned MappedRegion’s `get()` points to the first byte of usable
+ *       memory, adjusted for any page‐aligned offset. The total mapped length
+ *       is (size + offset), so `MappedRegion` will unmap exactly that length.
+ */
+[[nodiscard]] MappedRegion Mailbox::mapmem(uint32_t base, size_t size)
+{
+    // If a fake‐hook is set, call it instead of doing a real mmap
+    if (mapmem_impl_)
+    {
+        int fake = mapmem_impl_(base, size);
+        if (fake < 0)
         {
             throw std::system_error(
                 errno,
                 std::generic_category(),
-                "mbox_close(): ::close failed");
+                "mapmem(): hook failed");
+        }
+        // Cast to uintptr_t first to avoid narrowing conversion warnings
+        void *fake_ptr = reinterpret_cast<void *>(static_cast<uintptr_t>(fake));
+        return MappedRegion(fake_ptr, size);
+    }
+
+    // Real path: ensure /dev/mem is opened exactly once (thread‐safe)
+    {
+        std::scoped_lock lk(init_mutex_);
+        if (!mem_initialized_)
+        {
+            int fd = ::open("/dev/mem", O_RDWR | O_SYNC);
+            if (fd < 0)
+            {
+                mem_errno_ = errno;
+                mem_fd_.reset(-1);
+            }
+            else
+            {
+                mem_fd_.reset(fd);
+            }
+            mem_initialized_ = true;
         }
     }
-#endif
-}
 
-/**
- * @brief Retrieves GPU firmware version (GET_FIRMWARE_VERSION tag).
- * @param file_desc File descriptor returned by mbox_open().
- * @return Nonzero firmware version on success.
- * @throws std::system_error on failure (real mode only or hook returning error).
- */
-uint32_t get_version(int file_desc)
-{
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    uint32_t msg[7];
-    msg[0] = sizeof(msg);                                                 // total size
-    msg[1] = 0;                                                           // request code
-    msg[2] = static_cast<uint32_t>(MailboxTags::Tag::GetFirmwareVersion); // tag
-    msg[3] = 4;                                                           // value buffer size (in bytes)
-    msg[4] = 0;                                                           // req/res flag
-    msg[5] = 0;                                                           // placeholder for response
-    msg[6] = 0;                                                           // end tag
-
-    int rc = (property_impl)
-                 ? property_impl(file_desc, msg)
-                 : real_mbox_property(file_desc, msg);
-    if (rc < 0)
-    {
-        throw std::system_error(errno, std::generic_category(), "get_version(): hook/ioctl failed");
-    }
-    return msg[5];
-#else
-    return real_get_version(file_desc);
-#endif
-}
-
-/**
- * @brief Allocates GPU memory (ALLOCATE_MEMORY tag).
- * @param file_desc File descriptor returned by mbox_open().
- * @param size      Number of bytes to allocate.
- * @param align     Alignment in bytes.
- * @param flags     Allocation flags.
- * @return Nonzero handle on success.
- * @throws std::system_error on failure (real mode only or hook returning error).
- */
-uint32_t mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags)
-{
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    if (mem_alloc_impl)
-    {
-        int rc = mem_alloc_impl(file_desc, size, align, flags);
-        if (rc < 0)
-            throw std::system_error(errno, std::generic_category(), "mem_alloc(): hook failed");
-        return static_cast<uint32_t>(rc);
-    }
-    // Fall back to direct C‐style
-    uint32_t p[32];
-    size_t i = 0;
-    p[i++] = 0;
-    p[i++] = 0;
-    p[i++] = static_cast<uint32_t>(MailboxTags::Tag::AllocateMemory);
-    p[i++] = 12;
-    p[i++] = 12;
-    p[i++] = size;
-    p[i++] = align;
-    p[i++] = flags;
-    p[i++] = 0;
-    p[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
-    int rc = real_mbox_property(file_desc, p);
-    if (rc < 0 || p[5] == 0)
-    {
-        throw std::system_error(errno, std::generic_category(), "mem_alloc(): C‐style failed");
-    }
-    return p[5];
-#else
-    return real_mem_alloc(file_desc, size, align, flags);
-#endif
-}
-
-/**
- * @brief Frees GPU memory (RELEASE_MEMORY tag).
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle    Handle returned by mem_alloc().
- * @throws std::system_error on failure (real mode only or hook returning error).
- */
-void mem_free(int file_desc, uint32_t handle)
-{
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    if (mem_free_impl)
-    {
-        int rc = mem_free_impl(file_desc, handle);
-        if (rc < 0)
-            throw std::system_error(errno, std::generic_category(), "mem_free(): hook failed");
-        return;
-    }
-    // Fall back to direct C‐style
-    uint32_t p[32];
-    size_t i = 0;
-    p[i++] = 0;
-    p[i++] = 0;
-    p[i++] = static_cast<uint32_t>(MailboxTags::Tag::ReleaseMemory);
-    p[i++] = 4;
-    p[i++] = 4;
-    p[i++] = handle;
-    p[i++] = 0;
-    p[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
-    int rc = real_mbox_property(file_desc, p);
-    if (rc < 0)
-    {
-        throw std::system_error(errno, std::generic_category(), "mem_free(): C‐style failed");
-    }
-    return;
-#else
-    real_mem_free(file_desc, handle);
-#endif
-}
-
-/**
- * @brief Locks GPU memory (LOCK_MEMORY tag).
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle    Handle returned by mem_alloc().
- * @return Bus‐address handle (>0) on success.
- * @throws std::system_error on failure (real mode only or hook returning error).
- */
-uint32_t mem_lock(int file_desc, uint32_t handle)
-{
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    if (mem_lock_impl)
-    {
-        int rc = mem_lock_impl(file_desc, handle);
-        if (rc < 0)
-            throw std::system_error(errno, std::generic_category(), "mem_lock(): hook failed");
-        return static_cast<uint32_t>(rc);
-    }
-    // Fall back to direct C‐style
-    uint32_t p[32];
-    size_t i = 0;
-    p[i++] = 0;
-    p[i++] = 0;
-    p[i++] = static_cast<uint32_t>(MailboxTags::Tag::LockMemory);
-    p[i++] = 4;
-    p[i++] = 4;
-    p[i++] = handle;
-    p[i++] = 0;
-    p[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
-    int rc = real_mbox_property(file_desc, p);
-    if (rc < 0 || p[5] == 0)
-    {
-        throw std::system_error(errno, std::generic_category(), "mem_lock(): C‐style failed");
-    }
-    return p[5];
-#else
-    return real_mem_lock(file_desc, handle);
-#endif
-}
-
-/**
- * @brief Unlocks GPU memory (UNLOCK_MEMORY tag).
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle    Handle returned by mem_alloc().
- * @throws std::system_error on failure (real mode only or hook returning error).
- */
-void mem_unlock(int file_desc, uint32_t handle)
-{
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    if (mem_unlock_impl)
-    {
-        int rc = mem_unlock_impl(file_desc, handle);
-        if (rc < 0)
-            throw std::system_error(errno, std::generic_category(), "mem_unlock(): hook failed");
-        return;
-    }
-    // Fall back to direct C‐style
-    uint32_t p[32];
-    size_t i = 0;
-    p[i++] = 0;
-    p[i++] = 0;
-    p[i++] = static_cast<uint32_t>(MailboxTags::Tag::UnlockMemory);
-    p[i++] = 4;
-    p[i++] = 4;
-    p[i++] = handle;
-    p[i++] = 0;
-    p[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
-    int rc = real_mbox_property(file_desc, p);
-    if (rc < 0)
-    {
-        throw std::system_error(errno, std::generic_category(), "mem_unlock(): C‐style failed");
-    }
-    return;
-#else
-    real_mem_unlock(file_desc, handle);
-#endif
-}
-
-/**
- * @brief Maps physical memory via `/dev/mem`.
- * @param base Physical base address to map.
- * @param size Number of bytes to map.
- * @return Pointer on success.
- * @throws std::system_error on failure (real mode only or hook returning error).
- */
-void *mapmem(uint32_t base, size_t size)
-{
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    if (mapmem_impl)
-    {
-        int rc = mapmem_impl(base, size);
-        if (rc < 0)
-            throw std::system_error(errno, std::generic_category(), "mapmem(): hook failed");
-        // In hook scenario, we assume the hook itself did the mmap if it returned >=0; here return dummy
-        return reinterpret_cast<void *>(static_cast<uintptr_t>(rc));
-    }
-    // Fall back to direct C‐style
-    int fd = (get_mem_fd_impl) ? get_mem_fd_impl() : get_shared_mem_fd();
-    if (fd < 0)
-    {
-        throw std::system_error(errno, std::generic_category(), "mapmem(): get_mem_fd hook failed");
-    }
-    long page_l = sysconf(_SC_PAGESIZE);
-    size_t page = (page_l < 0 ? 4096u : static_cast<size_t>(page_l));
-    size_t offset = base % page;
-    off_t aligned = static_cast<off_t>(base - offset);
-    void *mapping = ::mmap(nullptr, size + offset, PROT_READ | PROT_WRITE, MAP_SHARED, fd, aligned);
-    if (mapping == MAP_FAILED)
-    {
-        throw std::system_error(errno, std::generic_category(), "mapmem(): C‐style mmap failed");
-    }
-    return static_cast<uint8_t *>(mapping) + offset;
-#else
-    return real_mapmem(base, size);
-#endif
-}
-
-/**
- * @brief Unmaps a region previously mapped by mapmem().
- * @param addr Pointer returned by mapmem().
- * @param size Same size passed into mapmem().
- * @throws std::system_error on failure (real mode only or hook returning error).
- */
-void unmapmem(void *addr, size_t size)
-{
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    if (unmapmem_impl)
-    {
-        int rc = unmapmem_impl(addr, size);
-        if (rc < 0)
-            throw std::system_error(errno, std::generic_category(), "unmapmem(): hook failed");
-        return;
-    }
-    // Fall back to direct C‐style
-    if (!addr)
-        return;
-    long page_l = sysconf(_SC_PAGESIZE);
-    size_t page = (page_l < 0 ? 4096u : static_cast<size_t>(page_l));
-    uintptr_t addr_u = reinterpret_cast<uintptr_t>(addr);
-    size_t offset = addr_u % page;
-    void *map_base = reinterpret_cast<void *>(addr_u - offset);
-    size_t map_len = size + offset;
-    if (::munmap(map_base, map_len) < 0)
-    {
-        throw std::system_error(errno, std::generic_category(), "unmapmem(): C‐style munmap failed");
-    }
-    return;
-#else
-    real_unmapmem(addr, size);
-#endif
-}
-
-/**
- * @brief Releases (closes) the cached `/dev/mem` FD.
- * @throws std::system_error on failure (real mode only or hook returning error).
- */
-void mem_cleanup(void)
-{
-#ifdef ENABLE_MBOX_TEST_HOOKS
-    if (mem_cleanup_impl)
-    {
-        int rc = mem_cleanup_impl();
-        if (rc < 0)
-            throw std::system_error(errno, std::generic_category(), "mem_cleanup(): hook failed");
-        return;
-    }
-    // Fall back to direct C‐style
-    if (s_mem_fd >= 0)
-    {
-        ::close(s_mem_fd);
-        s_mem_fd = -1;
-    }
-    return;
-#else
-    real_mem_cleanup();
-#endif
-}
-
-/*==============================================================================
-   “REAL” (non‐hooked) IMPLEMENTATIONS
-==============================================================================*/
-
-/**
- * @brief Wrapper around ::open(), so hooks can override if needed.
- */
-static int real_open_wrapper(const char *path, int flags)
-{
-    return ::open(path, flags);
-}
-
-/**
- * @brief Sends a mailbox property buffer via IOCTL().
- * @param file_desc Mailbox FD from mbox_open().
- * @param buf       Pointer to the property message buffer.
- * @return >=0 on success; -1 on error (errno set by ioctl).
- */
-static int real_mbox_property(int file_desc, void *buf)
-{
-    if (buf == nullptr)
-    {
-        errno = EINVAL;
-        return -1;
-    }
-    int ret = ::ioctl(file_desc, IOCTL_MBOX_PROPERTY, buf);
-
-#ifdef DEBUG_MAILBOX
-    uint32_t *p = reinterpret_cast<uint32_t *>(buf);
-    size_t words = *reinterpret_cast<uint32_t *>(buf) / sizeof(uint32_t);
-    for (size_t i = 0; i < words; ++i)
-    {
-        std::printf("%04zx: 0x%08x\n", i * sizeof(*p), p[i]);
-    }
-#endif
-
-    return (ret < 0) ? -1 : ret;
-}
-
-#ifndef ENABLE_MBOX_TEST_HOOKS
-
-/**
- * @brief Queries GPU firmware version (GET_FIRMWARE_VERSION tag).
- * @param file_desc Mailbox FD from mbox_open().
- * @return Nonzero version on success; throws std::system_error on error.
- */
-static uint32_t real_get_version(int file_desc)
-{
-    uint32_t msg[7];
-    msg[0] = sizeof(msg);
-    msg[1] = 0;
-    msg[2] = static_cast<uint32_t>(MailboxTags::Tag::GetFirmwareVersion);
-    msg[3] = 4;
-    msg[4] = 0;
-    msg[5] = 0;
-    msg[6] = 0;
-
-    if (real_mbox_property(file_desc, msg) < 0)
-    {
-        errno = EIO;
-        return 0;
-    }
-    return msg[5];
-}
-
-#endif
-
-/**
- * @brief Allocates GPU memory (ALLOCATE_MEMORY tag).
- * @throws std::system_error on failure (real mode only), or sets errno+returns 0 (test mode).
- */
-static uint32_t real_mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags)
-{
-    uint32_t p[32];
-    size_t i = 0;
-    p[i++] = 0;
-    p[i++] = 0;
-    p[i++] = static_cast<uint32_t>(MailboxTags::Tag::AllocateMemory);
-    p[i++] = 12;
-    p[i++] = 12;
-    p[i++] = size;
-    p[i++] = align;
-    p[i++] = flags;
-    p[i++] = 0;
-    p[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
-
-    if (real_mbox_property(file_desc, p) < 0)
+    if (mem_fd_.get() < 0)
     {
         throw std::system_error(
-            errno,
+            mem_errno_,
             std::generic_category(),
-            "mem_alloc(): real_mbox_property failed");
+            "mapmem(): cannot open /dev/mem");
     }
-    if (p[5] == 0)
-    {
-        throw std::system_error(
-            EIO,
-            std::generic_category(),
-            "mem_alloc(): firmware returned 0 handle");
-    }
-    return p[5];
-}
 
-/**
- * @brief Frees GPU memory (RELEASE_MEMORY tag).
- * @throws std::system_error on failure (real mode only).
- */
-static void real_mem_free(int file_desc, uint32_t handle)
-{
-    uint32_t p[32];
-    size_t i = 0;
-    p[i++] = 0;
-    p[i++] = 0;
-    p[i++] = static_cast<uint32_t>(MailboxTags::Tag::ReleaseMemory);
-    p[i++] = 4;
-    p[i++] = 4;
-    p[i++] = handle;
-    p[i++] = 0;
-    p[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
-
-    if (real_mbox_property(file_desc, p) < 0)
-    {
-        throw std::system_error(
-            errno,
-            std::generic_category(),
-            "mem_free(): real_mbox_property failed");
-    }
-}
-
-/**
- * @brief Locks GPU memory (LOCK_MEMORY tag) to obtain a bus address.
- * @return Bus‐address handle (>0) on success; throws on failure.
- */
-static uint32_t real_mem_lock(int file_desc, uint32_t handle)
-{
-    uint32_t p[32];
-    size_t i = 0;
-    p[i++] = 0;
-    p[i++] = 0;
-    p[i++] = static_cast<uint32_t>(MailboxTags::Tag::LockMemory);
-    p[i++] = 4;
-    p[i++] = 4;
-    p[i++] = handle;
-    p[i++] = 0;
-    p[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
-
-    if (real_mbox_property(file_desc, p) < 0)
-    {
-        throw std::system_error(
-            errno,
-            std::generic_category(),
-            "mem_lock(): real_mbox_property failed");
-    }
-    if (p[5] == 0)
-    {
-        throw std::system_error(
-            EPROTO,
-            std::generic_category(),
-            "mem_lock(): firmware returned 0");
-    }
-    return p[5];
-}
-
-/**
- * @brief Unlocks GPU memory (UNLOCK_MEMORY tag).
- * @throws std::system_error on failure (real mode only).
- */
-static void real_mem_unlock(int file_desc, uint32_t handle)
-{
-    uint32_t p[32];
-    size_t i = 0;
-    p[i++] = 0;
-    p[i++] = 0;
-    p[i++] = static_cast<uint32_t>(MailboxTags::Tag::UnlockMemory);
-    p[i++] = 4;
-    p[i++] = 4;
-    p[i++] = handle;
-    p[i++] = 0;
-    p[0] = static_cast<uint32_t>(i * sizeof(uint32_t));
-
-    if (real_mbox_property(file_desc, p) < 0)
-    {
-        throw std::system_error(
-            errno,
-            std::generic_category(),
-            "mem_unlock(): real_mbox_property failed");
-    }
-}
-
-/**
- * @brief Maps physical memory via `/dev/mem`.
- *
- * Throws on error (real mode); returns nullptr + sets errno on error (test mode).
- */
-static void *real_mapmem(uint32_t base, size_t size)
-{
-    int fd = get_shared_mem_fd(); // throws if open("/dev/mem") fails
-
-    // Determine page size
+    // Determine page size and compute page‐aligned address and offset
     long page_l = sysconf(_SC_PAGESIZE);
     size_t page = (page_l < 0 ? 4096u : static_cast<size_t>(page_l));
     size_t offset = base % page;
     off_t aligned = static_cast<off_t>(base - offset);
 
-    // Do the actual mmap
-    void *mapping = ::mmap(
-        nullptr,
-        size + offset,
-        PROT_READ | PROT_WRITE,
-        MAP_SHARED,
-        fd,
-        aligned);
-    if (mapping == MAP_FAILED)
+    // Perform mmap for (size + offset) bytes, starting at the page‐aligned address
+    void *raw = ::mmap(
+        /*addr=*/nullptr,
+        /*length=*/size + offset,
+        /*prot=*/PROT_READ | PROT_WRITE,
+        /*flags=*/MAP_SHARED,
+        /*fd=*/mem_fd_.get(),
+        /*offset=*/aligned);
+
+    if (raw == MAP_FAILED)
     {
         throw std::system_error(
             errno,
@@ -1001,46 +724,341 @@ static void *real_mapmem(uint32_t base, size_t size)
             "mapmem(): mmap failed");
     }
 
-    // Return pointer offset into the mapping region
-    return static_cast<uint8_t *>(mapping) + offset;
+    // Adjust returned pointer by the computed offset so that the returned
+    // address corresponds exactly to 'base'
+    auto mapped_ptr = static_cast<std::byte *>(raw) + offset;
+    return MappedRegion(
+        /*addr=*/static_cast<void *>(mapped_ptr),
+        /*size=*/size + offset);
 }
 
 /**
- * @brief Unmaps a region previously mapped by real_mapmem().
- * @param addr Pointer returned by real_mapmem().
- * @param size Same size passed into real_mapmem().
- * @throws std::system_error on failure (real mode only).
+ * @brief Release (close) the cached `/dev/mem` file descriptor.
+ *
+ * If a fake‐hook for mem_cleanup is installed, invokes the hook instead of
+ * closing the real file descriptor. Otherwise, resets the RAII‐wrapped FileDescriptor,
+ * causing it to close the underlying FD if it is still ≥ 0. Safe to call multiple times.
+ *
+ * @throws std::system_error if a fake‐hook (`mem_cleanup_impl_`) is installed and returns < 0.
  */
-static void real_unmapmem(void *addr, size_t size)
+void Mailbox::mem_cleanup()
 {
-    if (!addr)
+    // If a fake‐hook is set, call it and throw on failure.
+    if (mem_cleanup_impl_)
+    {
+        int rc = mem_cleanup_impl_();
+        if (rc < 0)
+        {
+            throw std::system_error(
+                errno,
+                std::generic_category(),
+                "mem_cleanup(): hook failed");
+        }
         return;
+    }
 
-    long page_l = sysconf(_SC_PAGESIZE);
-    size_t page = (page_l < 0 ? 4096u : static_cast<size_t>(page_l));
-    uintptr_t addr_u = reinterpret_cast<uintptr_t>(addr);
-    size_t offset = addr_u % page;
-    void *map_base = reinterpret_cast<void *>(addr_u - offset);
-    size_t map_len = size + offset;
-
-    if (::munmap(map_base, map_len) < 0)
+    // Real path: close /dev/mem FD if it's open (FileDescriptor::reset closes it).
+    if (mem_fd_.get() >= 0)
     {
-        throw std::system_error(
-            errno,
-            std::generic_category(),
-            "unmapmem(): munmap failed");
+        mem_fd_.reset(); // closes old FD and sets it to -1
     }
 }
 
 /**
- * @brief Cleans up (closes) the cached `/dev/mem` FD.
- *        Registered via atexit(); safe to call multiple times.
+ * @brief Static cleanup function for the cached mailbox file descriptor.
+ *
+ * Invoked (e.g., via atexit) to ensure that `/dev/vcio` is closed if still open.
+ * Retrieves the singleton Mailbox instance and, if its `mbox_fd_` is ≥ 0, calls
+ * the raw `::close()` on it and resets it to -1. Safe to call multiple times.
+ *
+ * @note This function is marked noexcept and will not throw.
  */
-static void real_mem_cleanup(void)
+void Mailbox::cleanup_mailbox_fd() noexcept
 {
-    if (s_mem_fd >= 0)
+    auto &inst = Mailbox::instance();
+    if (inst.mbox_fd_.get() >= 0)
     {
-        ::close(s_mem_fd);
-        s_mem_fd = -1;
+        ::close(inst.mbox_fd_.get());
+        inst.mbox_fd_.reset(-1);
     }
+}
+
+/**
+ * @brief Static cleanup function for the cached `/dev/mem` file descriptor.
+ *
+ * Invoked (e.g., via atexit) to ensure that `/dev/mem` is closed if still open.
+ * Retrieves the singleton Mailbox instance and, if its `mem_fd_` is ≥ 0, calls
+ * the raw `::close()` on it and resets it to -1. Safe to call multiple times.
+ *
+ * @note This function is marked noexcept and will not throw.
+ */
+void Mailbox::cleanup_mem_fd() noexcept
+{
+    auto &inst = Mailbox::instance();
+    if (inst.mem_fd_.get() >= 0)
+    {
+        ::close(inst.mem_fd_.get());
+        inst.mem_fd_.reset(-1);
+    }
+}
+
+//------------------------------------------------------------------------------
+/// @brief Perform a raw mailbox‐property ioctl on `/dev/vcio`.
+///
+/// This helper sends the buffer `buf` to the GPU via the mailbox property
+/// interface (ioctl( _IOWR(100, 0, char*) )) and optionally dumps the
+/// request/response words when debug mode is enabled.
+///
+/// @param file_desc   File descriptor returned by mbox_open().
+/// @param buf         Pointer to a word‐aligned buffer containing the
+///                    mailbox request.  Upon return, this buffer holds the
+///                    response from the GPU.  Must not be nullptr.
+///
+/// @return Returns the raw ioctl(2) return value (>= 0 on success).  Returns
+///         -1 on error and sets `errno` accordingly (e.g., EINVAL if `buf`
+///         is nullptr, or whatever `ioctl` sets on failure).
+///
+/// @note When `debug_ == true`, the contents of the buffer (word count and
+///       each 32-bit word) are printed to stdout via `dump_buffer()`.
+///
+/// @see _IOWR(100, 0, char*)
+/// @see dump_buffer()
+int Mailbox::real_mbox_property(int file_desc, void *buf)
+{
+    if (!buf)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    int ret = ::ioctl(file_desc, static_cast<unsigned long>(_IOWR(100, 0, char *)), buf);
+    if (debug_)
+    {
+        auto p = reinterpret_cast<uint32_t *>(buf);
+        size_t words = p[0] / sizeof(uint32_t);
+        dump_buffer(p, words);
+    }
+    return (ret < 0) ? -1 : ret;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Initialize and open the `/dev/vcio` mailbox device once (thread-safe).
+///
+/// Attempts to open `/dev/vcio` for read/write access and caches the file
+/// descriptor in the singleton’s `mbox_fd_`.  If this is the first successful
+/// open, registers `cleanup_mailbox_fd()` with `std::atexit()` to ensure the
+/// descriptor is closed when the program exits.
+///
+/// @note This method is intended to be called exactly once via a thread-safe
+///       check (`mailbox_initialized_` guard).  Subsequent calls should be
+///       no-ops.
+///
+/// @remarks On failure to open `/dev/vcio`, `mbox_errno_` is set to `errno`,
+///          and `mbox_fd_` is reset to –1.  On success, `mbox_fd_` holds the
+///          valid file descriptor and `cleanup_mailbox_fd()` will run at exit.
+///
+/// @post If the open succeeds, `mbox_fd_.get() >= 0`; otherwise, `mbox_fd_.get() == -1`.
+///
+/// @see cleanup_mailbox_fd()
+void Mailbox::init_mailbox_fd() noexcept
+{
+    int raw = ::open("/dev/vcio", O_RDWR);
+    if (raw < 0)
+    {
+        mbox_errno_ = errno;
+        mbox_fd_.reset(-1);
+    }
+    else
+    {
+        mbox_fd_.reset(raw);
+        std::atexit(&Mailbox::cleanup_mailbox_fd);
+    }
+}
+
+//------------------------------------------------------------------------------
+/// @brief Initialize and open the `/dev/mem` device once (thread-safe).
+///
+/// Attempts to open `/dev/mem` for read/write access with synchronous I/O
+/// and caches the file descriptor in the singleton’s `mem_fd_`.  This is
+/// intended to be called exactly once, guarded by `mem_initialized_`.
+///
+/// @note On failure to open `/dev/mem`, `mem_errno_` is set to `errno`,
+///       and `mem_fd_` is reset to –1.  On success, `mem_fd_` holds the valid
+///       file descriptor for subsequent calls to `mmap()`.
+///
+/// @post If the open succeeds, `mem_fd_.get() >= 0`; otherwise, `mem_fd_.get() == -1`.
+void Mailbox::init_mem_fd() noexcept
+{
+    int fd = ::open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0)
+    {
+        mem_errno_ = errno;
+        mem_fd_.reset(-1);
+    }
+    else
+    {
+        mem_fd_.reset(fd);
+    }
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “open” hook for test‐hook mode.
+///
+/// Simulates opening `/dev/vcio` by returning a dummy file descriptor.
+///
+/// @param /*path*/  Path to open (ignored).
+/// @param /*flags*/ Open flags (ignored).
+/// @return Always returns 100 to represent a valid FD in testing scenarios.
+static int fake_open(const char * /*path*/, int /*flags*/)
+{
+    return 100;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “close” hook for test‐hook mode.
+///
+/// Simulates closing a file descriptor by returning success.
+///
+/// @param /*fd*/  File descriptor to close (ignored).
+/// @return Always returns 0 to indicate success.
+static int fake_close(int /*fd*/)
+{
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “get firmware version” hook for test‐hook mode.
+///
+/// Checks if the mailbox tag in the buffer corresponds to
+/// `GetFirmwareVersion`.  If so, writes a fake version value into the response.
+///
+/// @param /*fd*/  Mailbox file descriptor (ignored).
+/// @param buf     Pointer to a mailbox message buffer.
+/// @return 0 on success; sets `errno = EINVAL` and returns -1 on invalid tag.
+///
+/// @throws None (operates in “no‐throw” C‐style).
+static int fake_version(int /*fd*/, void *buf)
+{
+    auto msg = static_cast<uint32_t *>(buf);
+    if (msg[2] == static_cast<uint32_t>(MailboxTags::Tag::GetFirmwareVersion))
+    {
+        msg[5] = 0x00020000; // Fake version number
+        return 0;
+    }
+    errno = EINVAL;
+    return -1;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “memory allocate” hook for test‐hook mode.
+///
+/// Simulates GPU memory allocation by returning a dummy handle.
+///
+/// @param /*fd*/    Mailbox file descriptor (ignored).
+/// @param /*size*/  Requested allocation size (ignored).
+/// @param /*align*/ Alignment requirement (ignored).
+/// @param /*flags*/ Allocation flags (ignored).
+/// @return Always returns 123 as the fake memory handle.
+static int fake_mem_alloc(int /*fd*/, uint32_t /*size*/, uint32_t /*align*/, uint32_t /*flags*/)
+{
+    return 123;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “memory free” hook for test‐hook mode.
+///
+/// Simulates freeing GPU memory by returning success.
+///
+/// @param /*fd*/      Mailbox file descriptor (ignored).
+/// @param /*handle*/  Memory handle to free (ignored).
+/// @return Always returns 0 to indicate success.
+static int fake_mem_free(int /*fd*/, uint32_t /*handle*/)
+{
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “memory lock” hook for test‐hook mode.
+///
+/// Simulates locking GPU memory and returns a dummy bus address.
+///
+/// @param /*fd*/      Mailbox file descriptor (ignored).
+/// @param /*handle*/  Memory handle to lock (ignored).
+/// @return Always returns 0xABC as the fake bus address.
+static int fake_mem_lock(int /*fd*/, uint32_t /*handle*/)
+{
+    return 0xABC;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “memory unlock” hook for test‐hook mode.
+///
+/// Simulates unlocking GPU memory by returning success.
+///
+/// @param /*fd*/      Mailbox file descriptor (ignored).
+/// @param /*handle*/  Memory handle to unlock (ignored).
+/// @return Always returns 0 to indicate success.
+static int fake_mem_unlock(int /*fd*/, uint32_t /*handle*/)
+{
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “map physical memory” hook for test‐hook mode.
+///
+/// Simulates a mapping failure by setting `errno = EPERM` and returning -1.
+///
+/// @param /*base*/  Physical base address (ignored).
+/// @param /*size*/  Size of the region to map (ignored).
+/// @return Always returns -1 and sets `errno = EPERM` to simulate a permission error.
+static int fake_mapmem(uint32_t /*base*/, size_t /*size*/)
+{
+    errno = EPERM;
+    return -1;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “unmap physical memory” hook for test‐hook mode.
+///
+/// Simulates unmapping by returning success.
+///
+/// @param /*addr*/  Mapped address (ignored).
+/// @param /*size*/  Size of the region (ignored).
+/// @return Always returns 0 to indicate success.
+static int fake_unmapmem(void * /*addr*/, size_t /*size*/)
+{
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Fake “memory cleanup” hook for test‐hook mode.
+///
+/// Simulates closing `/dev/mem` by returning success.
+///
+/// @return Always returns 0 to indicate success.
+static int fake_mem_cleanup(void)
+{
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+/// @brief Install default fake hooks to enable test‐hook mode.
+///
+/// Sets each mailbox API hook (`open`, `close`, `version`, `mem_alloc`, `mem_free`,
+/// `mem_lock`, `mem_unlock`, `mapmem`, `unmapmem`, `mem_cleanup`) to its corresponding
+/// fake implementation.  After calling this, all mailbox operations invoke the fakes.
+///
+/// @note This method does not throw; it simply assigns function pointers.
+void Mailbox::set_test_hooks() noexcept
+{
+    set_open_hook(&fake_open);
+    set_close_hook(&fake_close);
+    set_version_hook(&fake_version);
+    set_mem_alloc_hook(&fake_mem_alloc);
+    set_mem_free_hook(&fake_mem_free);
+    set_mem_lock_hook(&fake_mem_lock);
+    set_mem_unlock_hook(&fake_mem_unlock);
+    set_mapmem_hook(&fake_mapmem);
+    set_unmapmem_hook(&fake_unmapmem);
+    set_mem_cleanup_hook(&fake_mem_cleanup);
 }

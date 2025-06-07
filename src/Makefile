@@ -25,6 +25,7 @@
 # Debug flags
 DEBUG :=
 # Compile a “unit-test” binary that never touches real hardware
+DEBUG += -DDEBUG_MAILBOX
 # DEBUG += -DENABLE_MBOX_TEST_HOOKS
 
 # C++ Version

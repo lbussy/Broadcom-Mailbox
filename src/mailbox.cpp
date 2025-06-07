@@ -48,6 +48,13 @@
 #include <sys/mman.h>  // needed for mmap(), munmap(), MAP_SHARED, PROT_READ/WRITE
 #include <unistd.h>    // needed for close(), open(), sysconf()
 
+#ifdef DEBUG_WSPR_TRANSMIT
+#include <iostream>
+constexpr const bool debug = true;
+#else
+constexpr const bool debug = false;
+#endif
+
 /**
  * @struct MboxMessage
  * @brief Represents a mailbox message buffer for GPU communication.
@@ -221,38 +228,49 @@ int Mailbox::mbox_open()
         int fake_fd = open_impl_("/dev/vcio", O_RDWR);
         if (fake_fd < 0)
         {
-            // Preserve errno from the fake hook
-            throw std::system_error(errno, std::generic_category(),
+            throw std::system_error(errno ? errno : EIO, std::generic_category(),
                                     "mbox_open(): fake_open failed");
         }
         return fake_fd;
     }
 
-    // Real path: guard with mutex to ensure thread‐safe one‐time open
+    // Real path: guard with mutex to ensure thread-safe one-time open
     std::scoped_lock lk(init_mutex_);
     if (!mailbox_initialized_)
     {
-        // First time: attempt to open /dev/vcio
+        mbox_errno_ = EIO; // Set default error code in case errno is 0
+
         int fd = ::open("/dev/vcio", O_RDWR);
         if (fd < 0)
         {
-            // Store errno for later exception if needed
-            mbox_errno_ = errno;
+            if (errno != 0)
+                mbox_errno_ = errno; // Use actual errno if set
+
+#ifdef DEBUG_WSPR_TRANSMIT
+            std::cerr << "[DEBUG Mailbox] mbox_open(): Failed to open /dev/vcio — errno = "
+                      << mbox_errno_ << " (" << std::strerror(mbox_errno_) << ")\n";
+#endif
             mbox_fd_.reset(-1);
         }
         else
         {
             mbox_fd_.reset(fd);
         }
+
         mailbox_initialized_ = true;
     }
 
     if (mbox_fd_.get() < 0)
     {
-        // If the cached FD is still invalid, throw with stored errno
+#ifdef DEBUG_WSPR_TRANSMIT
+        std::cerr << "[DEBUG Mailbox] mbox_fd_ = " << mbox_fd_.get()
+                  << ", mbox_errno_ = " << mbox_errno_
+                  << " (" << std::strerror(mbox_errno_) << ")\n";
+#endif
         throw std::system_error(mbox_errno_, std::generic_category(),
                                 "mbox_open(): cannot open /dev/vcio");
     }
+
     return mbox_fd_.get();
 }
 

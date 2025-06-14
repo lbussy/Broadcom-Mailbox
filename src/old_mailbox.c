@@ -29,7 +29,7 @@
  * @param size Size of the memory region to map.
  * @return Pointer to the mapped memory, or exits on failure.
  */
-void *mapmem(uint32_t base, uint32_t size)
+volatile uint8_t *mapmem(uint32_t base, uint32_t size)
 {
     int mem_fd;
     unsigned offset = base % PAGE_SIZE;
@@ -59,9 +59,17 @@ void *mapmem(uint32_t base, uint32_t size)
  * @param addr Pointer to the mapped memory.
  * @param size Size of the memory region to unmap.
  */
-void unmapmem(void *addr, uint32_t size)
+void unmapmem(volatile uint8_t *addr, uint32_t size)
 {
-    if (munmap(addr, size) != 0)
+    // Recover the numeric pointer and compute the offset
+    uintptr_t addr_val = (uintptr_t)addr;
+    unsigned offset    = addr_val % PAGE_SIZE;
+
+    // Subtract offset to get the original mapping address
+    void *raw = (void *)(addr_val - offset);
+
+    // Cast away volatile *only* here and unmap
+    if (munmap(raw, size) != 0)
     {
         perror("Error: munmap failed");
         exit(EXIT_FAILURE);

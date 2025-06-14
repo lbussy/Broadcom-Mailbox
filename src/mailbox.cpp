@@ -78,13 +78,13 @@ uint32_t Mailbox::mem_unlock(int fd, uint32_t handle)
 }
 
 // Wrapper around C mapmem()
-void *Mailbox::mapmem(uint32_t base, uint32_t size)
+volatile uint8_t *Mailbox::mapmem(uint32_t base, uint32_t size)
 {
     return ::mapmem(base, size);
 }
 
 // Wrapper around C unmapmem()
-void Mailbox::unmapmem(void *addr, uint32_t size)
+void Mailbox::unmapmem(volatile uint8_t *addr, uint32_t size)
 {
     ::unmapmem(addr, size);
 }

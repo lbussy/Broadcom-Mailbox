@@ -80,14 +80,14 @@ public:
      * @param size Size of region in bytes.
      * @return Pointer to mapped region.
      */
-    void *mapmem(uint32_t base, uint32_t size);
+    volatile uint8_t *mapmem(uint32_t base, uint32_t size);
 
     /**
      * @brief Unmap physical memory (maps to unmapmem()).
      * @param addr Pointer returned by mapmem().
      * @param size Size of the mapped region.
      */
-    void unmapmem(void *addr, uint32_t size);
+    void unmapmem(volatile uint8_t *addr, uint32_t size);
 
     /**
      * @brief Determine the SoC peripheral base address from the device tree.

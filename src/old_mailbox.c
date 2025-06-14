@@ -6,7 +6,7 @@
  * - http://www.freenos.org/doxygen/classBroadcomMailbox.html
  */
 
-#include "old_mailbox.h"    // project header
+#include "old_mailbox.h" // project header
 
 // C Standard Library
 #include <stdint.h>
@@ -29,15 +29,17 @@
  * @param size Size of the memory region to map.
  * @return Pointer to the mapped memory, or exits on failure.
  */
-void *mapmem(uint32_t base, uint32_t size)
+volatile uint8_t *mapmem(uint32_t base, uint32_t size)
 {
     int mem_fd;
     unsigned offset = base % PAGE_SIZE;
     base -= offset;
 
-    if ((mem_fd = open("/dev/mem", O_RDWR | O_SYNC)) < 0)
+    if ((mem_fd = open(MEM_FILE_NAME, O_RDWR | O_SYNC)) < 0)
     {
-        fprintf(stderr, "Error: Cannot open /dev/mem. Run as root or use sudo.\n");
+        fprintf(stderr,
+                "Error: Cannot open %s. Run as root or use sudo.\n",
+                MEM_FILE_NAME);
         exit(EXIT_FAILURE);
     }
 
@@ -59,9 +61,17 @@ void *mapmem(uint32_t base, uint32_t size)
  * @param addr Pointer to the mapped memory.
  * @param size Size of the memory region to unmap.
  */
-void unmapmem(void *addr, uint32_t size)
+void unmapmem(volatile uint8_t *addr, uint32_t size)
 {
-    if (munmap(addr, size) != 0)
+    // Recover the numeric pointer and compute the offset
+    uintptr_t addr_val = (uintptr_t)addr;
+    unsigned offset = addr_val % PAGE_SIZE;
+
+    // Subtract offset to get the original mapping address
+    void *raw = (void *)(addr_val - offset);
+
+    // Cast away volatile *only* here and unmap
+    if (munmap(raw, size) != 0)
     {
         perror("Error: munmap failed");
         exit(EXIT_FAILURE);
@@ -87,7 +97,7 @@ static int mbox_property(int file_desc, void *buf)
     int i;
     unsigned size = *(unsigned *)buf;
     for (i = 0; i < size / 4; i++)
-        printf("%04zx: 0x%08x\n", i * sizeof *p, p[i]);  // Use %zx for size_t
+        printf("%04zx: 0x%08x\n", i * sizeof *p, p[i]); // Use %zx for size_t
 #endif
     return ret_val;
 }

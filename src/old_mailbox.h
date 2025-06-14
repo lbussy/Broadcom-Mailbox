@@ -13,8 +13,12 @@
 #define MAJOR_NUM_B 100
 /** IOCTL command for mailbox property interface. */
 #define IOCTL_MBOX_PROPERTY _IOWR(MAJOR_NUM_B, 0, char *)
+
 /** Name of the mailbox device file. */
 #define DEVICE_FILE_NAME "/dev/vcio"
+
+/** Name of the memory device file. */
+#define MEM_FILE_NAME "/dev/mem"
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,7 +83,7 @@ uint32_t mem_unlock(int file_desc, uint32_t handle);
  * @param size Size of the memory region to map in bytes.
  * @return Pointer to the mapped memory region.
  */
-void *mapmem(uint32_t base, uint32_t size);
+volatile uint8_t *mapmem(uint32_t base, uint32_t size);
 
 /**
  * @brief Unmaps memory previously mapped with mapmem().
@@ -87,7 +91,7 @@ void *mapmem(uint32_t base, uint32_t size);
  * @param addr Pointer to the mapped memory.
  * @param size Size of the mapped memory region in bytes.
  */
-void unmapmem(void *addr, uint32_t size);
+void unmapmem(volatile uint8_t *addr, uint32_t size);
 
 #ifdef __cplusplus
 }

@@ -1,130 +1,76 @@
 # Raspberry Pi Broadcom Mailbox Communication Library
 
-This library provides an interface for communicating with the **Raspberry Pi GPU** via the **mailbox interface**. It enables users to interact with the GPU, allocate memory, execute GPU code, and control QPUs.
+A minimal C++17 wrapper for the Raspberry Pi GPU mailbox interface—designed to be used as a **git submodule** in your project rather than a system-wide library install.
 
 ## 📌 Features
 
-- Open and close the mailbox device.
-- Query the mailbox interface version.
-- Allocate, free, lock, and unlock GPU memory.
-- Execute GPU code and control QPUs.
-- Map physical memory into the process's address space.
+* Thin, one‑for‑one C++ shim over the legacy C API (`mbox_open`, `mem_alloc`, etc.)
+* Correct big‑endian parsing of `/proc/device-tree/soc/ranges` for peripheral base
+* Explicit control over mailbox open/close, memory allocation, lock/unlock, and physical memory mapping
+* Lightweight: no external dependencies beyond the C++ standard library and the Linux kernel headers
 
-## 📦 Installation
+## 📦 Integration as a Submodule
 
-### 1. Clone the Repository
+1. **Add as submodule**
 
-```bash
-git clone https://github.com/lbussy/Broadcom-Mailbox.git
-cd mailbox-library
-```
+   ```bash
+   cd your-project
+   git submodule add https://github.com/lbussy/Broadcom-Mailbox.git extern/Broadcom-Mailbox
 
-### 2. Build the Library
+   # Initialize and fetch
+   git submodule update --init --recursive
+   ```
 
-```bash
-make
-```
+2. **Include in your build**
 
-### 3. Install System-Wide (Optional)
+   * Add `extern/Broadcom-Mailbox/src` (or wherever you placed it) to your include path.
+   * Compile and link `mailbox.cpp` and `old_mailbox.c` alongside your own sources.
 
-```bash
-sudo make install
-```
+   ```makefile
+   INCLUDES += -I$(PROJECT_ROOT)/extern/Broadcom-Mailbox/src
+   SRCS     += \
+       $(PROJECT_ROOT)/extern/Broadcom-Mailbox/src/mailbox.cpp \
+       $(PROJECT_ROOT)/extern/Broadcom-Mailbox/src/old_mailbox.c
+   ```
 
-## 🚀 Usage
+3. **Include the header**
 
-### 1. Include the Header in Your Code
+   ```cpp
+   #include "mailbox.hpp"
+   extern Mailbox mailbox; // global instance
+   ```
 
-```c
-#include "mailbox.h"
-```
+4. **Call the API**
 
-### 2. Open the Mailbox Device\
+   ```cpp
+   mailbox.mbox_open();
+   uint32_t handle = mailbox.mem_alloc(4096, 4096, flags);
+   uint32_t bus    = mailbox.mem_lock(handle);
+   void*   ptr     = mailbox.mapmem(
+       Mailbox::discover_peripheral_base(), 4096
+   );
+   mailbox.unmapmem(ptr, 4096);
+   mailbox.mem_unlock(handle);
+   mailbox.mem_free(handle);
+   mailbox.mbox_close();
+   ```
 
-```c
-int file_desc = mbox_open();
-```
+## 🔧 Build Requirements
 
-### 3. Allocate Memory
+* **Raspberry Pi OS (Raspbian)** on board (Pi 1 through Pi 4)
+* **Linux kernel ≥ 4.1** (provides `/dev/vcio`)
+* **GCC** or **Clang** with C++17 support
 
-```c
-uint32_t handle = mem_alloc(file_desc, 1024, 4096, 0);
-```
+## ⚠️ Usage Notes
 
-### 4. Lock and Map the Memory
-
-```c
-uint32_t mem_addr = mem_lock(file_desc, handle);
-void *mapped_mem = mapmem(mem_addr, 1024);
-```
-
-### 5. Unlock and Free Memory
-
-```c
-mem_unlock(file_desc, handle);
-mem_free(file_desc, handle);
-```
-
-### 6. Close the Mailbox
-
-```c
-mbox_close(file_desc);
-```
-
-## 📖 API Reference
-
-### Mailbox Functions
-
-| Function | Description |
-|----------|------------|
-| `int mbox_open()` | Opens the mailbox device (`/dev/vcio`). |
-| `void mbox_close(int file_desc)` | Closes the mailbox device. |
-| `uint32_t get_version(int file_desc)` | Gets the mailbox interface version. |
-
-### Memory Management
-
-| Function | Description |
-|----------|------------|
-| `uint32_t mem_alloc(int fd, uint32_t size, uint32_t align, uint32_t flags)` | Allocates memory. |
-| `uint32_t mem_free(int fd, uint32_t handle)` | Frees allocated memory. |
-| `uint32_t mem_lock(int fd, uint32_t handle)` | Locks allocated memory. |
-| `uint32_t mem_unlock(int fd, uint32_t handle)` | Unlocks locked memory. |
-| `void *mapmem(uint32_t base, uint32_t size)` | Maps physical memory into the process's address space. |
-| `void unmapmem(void *addr, uint32_t size)` | Unmaps previously mapped memory. |
-
-### GPU Execution
-
-| Function | Description |
-|----------|------------|
-| `uint32_t execute_code(int fd, uint32_t code, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3, uint32_t r4, uint32_t r5)` | Executes GPU code. |
-| `uint32_t qpu_enable(int fd, uint32_t enable)` | Enables/disables the QPU. |
-| `uint32_t execute_qpu(int fd, uint32_t num_qpus, uint32_t control, uint32_t noflush, uint32_t timeout)` | Executes QPU programs. |
-
-## 🔧 Requirements
-
-- Raspberry Pi running **Raspberry Pi OS (Raspbian)**
-- Kernel **>= 4.1** (uses `/dev/vcio`)
-- **C Compiler** (GCC recommended)
-
-## ⚠️ Notes
-
-- You **must** run programs using this library as **root (sudo)** to access `/dev/mem` for memory mapping.
-- Some functions depend on **specific Raspberry Pi GPU firmware versions**.
+* **Run as root** (e.g., via `sudo`) to map `/dev/mem` for peripheral access.
+* Endianness is handled internally—no manual byte-swapping needed.
+* This is a **header + source** inclusion; no `make install` step.
 
 ## 📜 License
 
-This project is released under the **BSD 3-Clause License**, as required by Broadcom’s mailbox implementation. See [LICENSE](LICENSE.md) for details.
+Distributed under the **BSD 3-Clause License**. See [LICENSE](LICENSE.md).
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please:
-
-1. Fork the repository.
-2. Create a new branch (`git checkout -b feature-name`).
-3. Commit your changes (`git commit -m "Add feature"`).
-4. Push to the branch (`git push origin feature-name`).
-5. Open a **Pull Request**.
-
-## 📞 Support
-
-If you encounter any issues, open an [Issue](https://github.com/lbussy/Broadcom-Mailbox/issues) or start a discussion.
+PRs welcome. Please fork, branch, commit, and open a pull request.

@@ -1,34 +1,3 @@
-/**
- * @file mailbox.c
- * @brief Implementation of mailbox-based communication for the Raspberry Pi.
- *
- * Copyright (c) 2012, Broadcom Europe Ltd.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *  - Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  - Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *  - Neither the name of the copyright holder nor the names of its
- *    contributors may be used to endorse or promote products derived from
- *    this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
-
 /*
  * References:
  * - https://github.com/raspberrypi/firmware/wiki/Mailboxes
@@ -37,15 +6,19 @@
  * - http://www.freenos.org/doxygen/classBroadcomMailbox.html
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include "old_mailbox.h"    // project header
+
+// C Standard Library
 #include <stdint.h>
-#include <sys/mman.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// POSIX/system headers
+#include <fcntl.h>
 #include <sys/ioctl.h>
-#include "mailbox.h"
+#include <sys/mman.h>
+#include <unistd.h>
 
 #define PAGE_SIZE (4 * 1024)
 
@@ -221,43 +194,6 @@ unsigned mem_unlock(int file_desc, unsigned handle)
     if (mbox_property(file_desc, p) < 0)
     {
         fprintf(stderr, "Error: mem_unlock failed.\n");
-        return 0;
-    }
-
-    return p[5];
-}
-
-/**
- * @brief Executes code in the GPU using the mailbox interface.
- *
- * @param file_desc File descriptor for the mailbox.
- * @param code Address of the code to execute.
- * @param r0-r5 Parameters to pass to the code.
- * @return Result of the code execution, or 0 on error.
- */
-unsigned execute_code(int file_desc, unsigned code, unsigned r0, unsigned r1, unsigned r2, unsigned r3, unsigned r4, unsigned r5)
-{
-    unsigned p[32];
-    unsigned i = 0;
-
-    p[i++] = 0;          // Size
-    p[i++] = 0x00000000; // Process request
-    p[i++] = 0x30010;    // Tag ID
-    p[i++] = 28;         // Size of the buffer
-    p[i++] = 28;         // Size of the data
-    p[i++] = code;
-    p[i++] = r0;
-    p[i++] = r1;
-    p[i++] = r2;
-    p[i++] = r3;
-    p[i++] = r4;
-    p[i++] = r5;
-    p[i++] = 0x00000000; // End tag
-    p[0] = i * sizeof(*p);
-
-    if (mbox_property(file_desc, p) < 0)
-    {
-        fprintf(stderr, "Error: execute_code failed.\n");
         return 0;
     }
 

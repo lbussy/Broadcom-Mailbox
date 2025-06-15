@@ -1,4 +1,5 @@
-#include "mailbox.hpp"      // project header
+#include "mailbox.hpp" // project header
+#include "bcm_model.hpp"
 
 // C++ Standard Library
 #include <cstdio>
@@ -6,15 +7,16 @@
 #include <optional>
 
 // POSIX/system headers
-#include <endian.h>         // for be32toh()
+#include <endian.h> // for be32toh()
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
-#include "old_mailbox.h"    // legacy C API
+#include "old_mailbox.h" // legacy C API
 #ifdef __cplusplus
 }
 #endif
@@ -29,22 +31,22 @@ Mailbox::Mailbox()
 // Destructor: close on destruction
 Mailbox::~Mailbox()
 {
-    mbox_close(fd_);
+    mbox_close();
 }
 
 // Wrapper around C mbox_open()
-int Mailbox::mbox_open()
+void Mailbox::mbox_open()
 {
     if (fd_ >= 0)
         throw std::runtime_error("Mailbox already open");
     fd_ = ::mbox_open();
     if (fd_ < 0)
         throw std::runtime_error("mbox_open() failed");
-    return fd_;
+    return;
 }
 
 // Wrapper around C mbox_close()
-void Mailbox::mbox_close(int fd)
+void Mailbox::mbox_close()
 {
     if (fd_ >= 0)
     {
@@ -54,25 +56,25 @@ void Mailbox::mbox_close(int fd)
 }
 
 // Wrapper around C mem_alloc()
-uint32_t Mailbox::mem_alloc(int fd, uint32_t size, uint32_t align, uint32_t flags)
+uint32_t Mailbox::mem_alloc(uint32_t size, uint32_t align)
 {
-    return ::mem_alloc(fd_, size, align, flags);
+    return ::mem_alloc(fd_, size, align, get_mem_flag());
 }
 
 // Wrapper around C mem_free()
-uint32_t Mailbox::mem_free(int fd, uint32_t handle)
+uint32_t Mailbox::mem_free(uint32_t handle)
 {
     return ::mem_free(fd_, handle);
 }
 
 // Wrapper around C mem_lock()
-uint32_t Mailbox::mem_lock(int fd, uint32_t handle)
+uint32_t Mailbox::mem_lock(uint32_t handle)
 {
     return ::mem_lock(fd_, handle);
 }
 
 // Wrapper around C mem_unlock()
-uint32_t Mailbox::mem_unlock(int fd, uint32_t handle)
+uint32_t Mailbox::mem_unlock(uint32_t handle)
 {
     return ::mem_unlock(fd_, handle);
 }
@@ -89,15 +91,17 @@ void Mailbox::unmapmem(volatile uint8_t *addr, uint32_t size)
     ::unmapmem(addr, size);
 }
 
-static std::optional<uint32_t> read_dt_range_helper(const char* path, std::size_t offset)
+static std::optional<uint32_t> read_dt_range_helper(const char *path, std::size_t offset)
 {
     std::ifstream f(path, std::ios::binary);
-    if (!f) return std::nullopt;
+    if (!f)
+        return std::nullopt;
 
     f.seekg(offset);
     uint32_t be_val = 0;
-    f.read(reinterpret_cast<char*>(&be_val), sizeof(be_val));
-    if (!f) return std::nullopt;
+    f.read(reinterpret_cast<char *>(&be_val), sizeof(be_val));
+    if (!f)
+        return std::nullopt;
 
     // convert from big-endian on-disk to CPU-endian
     uint32_t val = be32toh(be_val);
@@ -113,4 +117,46 @@ uint32_t Mailbox::discover_peripheral_base()
     else if (auto v = read_dt_range_helper("/proc/device-tree/soc/ranges", 8); v)
         base = *v;
     return base;
+}
+
+uint32_t Mailbox::get_mem_flag()
+{
+    static std::optional<unsigned> cached_rev;
+    if (!cached_rev)
+    {
+        std::ifstream f("/proc/cpuinfo");
+        unsigned rev = 0;
+        if (f)
+        {
+            std::string line;
+            while (std::getline(f, line))
+            {
+                if (sscanf(line.c_str(), "Revision\t: %x", &rev) == 1)
+                {
+                    cached_rev = rev;
+                    break;
+                }
+            }
+        }
+        if (!cached_rev)
+            cached_rev = 0;
+    }
+
+    unsigned rev = *cached_rev;
+    BCMChip proc = (rev & 0x800000)
+                       ? static_cast<BCMChip>((rev & 0xF000) >> 12)
+                       : BCMChip::BCM_HOST_PROCESSOR_BCM2835;
+
+    switch (proc)
+    {
+    case BCMChip::BCM_HOST_PROCESSOR_BCM2835:
+        return 0x0C;
+    case BCMChip::BCM_HOST_PROCESSOR_BCM2836:
+    case BCMChip::BCM_HOST_PROCESSOR_BCM2837:
+    case BCMChip::BCM_HOST_PROCESSOR_BCM2711:
+        return 0x04;
+    }
+    throw std::runtime_error(
+        std::string("Mailbox::get_mem_flag(): unknown chipset ") +
+        std::string(to_string(proc)));
 }

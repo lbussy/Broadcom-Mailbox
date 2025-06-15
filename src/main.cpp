@@ -8,7 +8,7 @@ int main()
     try
     {
         std::cout << "Opening mailbox.\n";
-        int fd = ::mailbox.mbox_open();
+        ::mailbox.mbox_open();
 
         std::cout << "Mailbox FD: " << ::mailbox.get_fd() << "\n";
 
@@ -18,22 +18,21 @@ int main()
 
         constexpr uint32_t size = 4096;
         constexpr uint32_t align = 4096;
-        constexpr uint32_t flags = 0;
 
         std::cout << "Allocating " << size << " bytes.\n";
-        uint32_t handle = ::mailbox.mem_alloc(fd, size, align, flags);
+        uint32_t handle = ::mailbox.mem_alloc(size, align);
         std::cout << "Allocated handle: " << handle << "\n";
 
         std::cout << "Locking handle.\n";
-        uint32_t bus_addr = ::mailbox.mem_lock(fd, handle);
+        uint32_t bus_addr = ::mailbox.mem_lock(handle);
         std::cout << "Locked bus address: 0x" << std::hex << bus_addr << std::dec << "\n";
 
         std::cout << "Unlocking handle.\n";
-        uint32_t unlock_res = ::mailbox.mem_unlock(fd, handle);
+        uint32_t unlock_res = ::mailbox.mem_unlock(handle);
         std::cout << "Unlock result: " << unlock_res << "\n";
 
         std::cout << "Freeing handle.\n";
-        uint32_t free_res = ::mailbox.mem_free(fd, handle);
+        uint32_t free_res = ::mailbox.mem_free(handle);
         std::cout << "Free result: " << free_res << "\n";
 
         std::cout << "Mapping memory region at peripheral base.\n";
@@ -45,7 +44,7 @@ int main()
         std::cout << "Unmapped.\n";
 
         std::cout << "Closing mailbox.\n";
-        ::mailbox.mbox_close(fd);
+        ::mailbox.mbox_close();
         std::cout << "Done.\n";
 
         return EXIT_SUCCESS;
@@ -56,7 +55,7 @@ int main()
         // Attempt to close if open
         if (::mailbox.get_fd() >= 0)
         {
-            ::mailbox.mbox_close(::mailbox.get_fd());
+            ::mailbox.mbox_close();
         }
         return EXIT_FAILURE;
     }

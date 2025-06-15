@@ -31,12 +31,12 @@ public:
      * @brief Open the mailbox device (maps to mbox_open()).
      * @throws std::runtime_error on failure.
      */
-    int mbox_open();
+    void mbox_open();
 
     /**
      * @brief Close the mailbox device (maps to mbox_close()).
      */
-    void mbox_close(int fd);
+    void mbox_close();
 
     /**
      * @brief Returns the underlying mailbox file descriptor.
@@ -48,31 +48,30 @@ public:
      * @brief Allocate memory via mailbox (maps to mem_alloc()).
      * @param size  Number of bytes to allocate.
      * @param align Alignment in bytes.
-     * @param flags Allocation flags.
      * @return Handle to allocated memory.
      */
-    uint32_t mem_alloc(int fd, uint32_t size, uint32_t align, uint32_t flags);
+    uint32_t mem_alloc(uint32_t size, uint32_t align);
 
     /**
      * @brief Free memory via mailbox (maps to mem_free()).
      * @param handle Handle returned by mem_alloc().
      * @return Result code (non-zero on success).
      */
-    uint32_t mem_free(int fd, uint32_t handle);
+    uint32_t mem_free(uint32_t handle);
 
     /**
      * @brief Lock memory via mailbox (maps to mem_lock()).
      * @param handle Handle returned by mem_alloc().
      * @return Bus address of locked memory.
      */
-    uint32_t mem_lock(int fd, uint32_t handle);
+    uint32_t mem_lock(uint32_t handle);
 
     /**
      * @brief Unlock memory via mailbox (maps to mem_unlock()).
      * @param handle Handle returned by mem_alloc().
      * @return Result code (non-zero on success).
      */
-    uint32_t mem_unlock(int fd, uint32_t handle);
+    uint32_t mem_unlock(uint32_t handle);
 
     /**
      * @brief Map physical memory (maps to mapmem()).
@@ -98,6 +97,17 @@ public:
 
 private:
     int fd_ = -1; ///< mailbox file descriptor, -1 if closed
+
+    /**
+     * @brief Determine the mailbox mem_flag based on Pi hardware revision.
+     *
+     * Reads `/proc/cpuinfo` (cached on first call), extracts the processor ID,
+     * and returns 0x0C for BCM2835 (Pi 1) or 0x04 for later models (Pi 2/3/4).
+     *
+     * @return The mem_flag to pass into mem_alloc().
+     * @throws std::runtime_error on an unrecognized chipset.
+     */
+    uint32_t get_mem_flag();
 };
 
 extern Mailbox mailbox;

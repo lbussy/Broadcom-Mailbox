@@ -79,7 +79,7 @@ public:
      * @param size Size of region in bytes.
      * @return Pointer to mapped region.
      */
-    volatile uint8_t *mapmem(uint32_t base, uint32_t size);
+    volatile uint8_t *mapmem(uint32_t base, size_t size);
 
     /**
      * @brief Unmap physical memory (maps to unmapmem()).

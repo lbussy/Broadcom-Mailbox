@@ -80,15 +80,15 @@ uint32_t Mailbox::mem_unlock(uint32_t handle)
 }
 
 // Wrapper around C mapmem()
-volatile uint8_t *Mailbox::mapmem(uint32_t base, uint32_t size)
+volatile uint8_t *Mailbox::mapmem(uint32_t base, size_t size)
 {
-    return ::mapmem(base, size);
+    return ::mapmem(base, static_cast<uint32_t>(size));
 }
 
 // Wrapper around C unmapmem()
 void Mailbox::unmapmem(volatile uint8_t *addr, uint32_t size)
 {
-    ::unmapmem(addr, size);
+    ::unmapmem(addr, static_cast<uint32_t>(size));
 }
 
 static std::optional<uint32_t> read_dt_range_helper(const char *path, std::size_t offset)

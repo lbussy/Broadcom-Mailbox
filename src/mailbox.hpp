@@ -95,6 +95,11 @@ public:
      */
     static uint32_t discover_peripheral_base();
 
+    /// Mask of the high bits in a 32-bit bus address that indicate caching flags.
+    static constexpr std::uintptr_t BUS_FLAG_MASK = 0xC0000000ULL;
+    /// Base bus address for peripheral registers (to compute offsets into the mapped window).
+    static constexpr std::uintptr_t PERIPH_BUS_BASE = 0x7E000000ULL;
+
 private:
     int fd_ = -1; ///< mailbox file descriptor, -1 if closed
 

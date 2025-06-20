@@ -16,11 +16,8 @@ int main()
         uint32_t base = Mailbox::discover_peripheral_base();
         std::cout << "Peripheral base: 0x" << std::hex << base << std::dec << "\n";
 
-        constexpr uint32_t size = 4096;
-        constexpr uint32_t align = 4096;
-
-        std::cout << "Allocating " << size << " bytes.\n";
-        uint32_t handle = ::mailbox.mem_alloc(size, align);
+        std::cout << "Allocating " << Mailbox::PAGE_SIZE << " bytes.\n";
+        uint32_t handle = ::mailbox.mem_alloc(Mailbox::PAGE_SIZE, Mailbox::BLOCK_SIZE);
         std::cout << "Allocated handle: " << handle << "\n";
 
         std::cout << "Locking handle.\n";
@@ -36,11 +33,11 @@ int main()
         std::cout << "Free result: " << free_res << "\n";
 
         std::cout << "Mapping memory region at peripheral base.\n";
-        volatile uint8_t *vaddr = ::mailbox.mapmem(base, size);
+        volatile uint8_t *vaddr = ::mailbox.mapmem(base, Mailbox::BLOCK_SIZE);
         std::cout << "Mapped address: " << vaddr << "\n";
 
         std::cout << "Unmapping memory region.\n";
-        ::mailbox.unmapmem(vaddr, size);
+        ::mailbox.unmapmem(vaddr, Mailbox::PAGE_SIZE);
         std::cout << "Unmapped.\n";
 
         std::cout << "Closing mailbox.\n";

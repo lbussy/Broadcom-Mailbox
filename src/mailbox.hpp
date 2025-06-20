@@ -100,6 +100,11 @@ public:
     /// Base bus address for peripheral registers (to compute offsets into the mapped window).
     static constexpr std::uintptr_t PERIPH_BUS_BASE = 0x7E000000ULL;
 
+    /// Standard page size (4 KiB) for mailbox allocations.
+    static constexpr size_t PAGE_SIZE  = 4 * 1024;
+    /// Standard block size (4 KiB) for mailbox allocations (same as PAGE_SIZE).
+    static constexpr size_t BLOCK_SIZE = 4 * 1024;
+
 private:
     int fd_ = -1; ///< mailbox file descriptor, -1 if closed
 

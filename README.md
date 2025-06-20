@@ -43,13 +43,29 @@ A minimal C++17 wrapper for the Raspberry Pi GPU mailbox interface—designed t
 4. **Call the API**
 
    ```cpp
+   // Open the mailbox device
    mailbox.mbox_open();
-   uint32_t handle = mailbox.mem_alloc(4096, 4096, flags);
-   uint32_t bus    = mailbox.mem_lock(handle);
-   void*   ptr     = mailbox.mapmem(
-       Mailbox::discover_peripheral_base(), 4096
+
+   // Allocate one page of GPU‐accessible memory
+   uint32_t handle = mailbox.mem_alloc(
+      Mailbox::PAGE_SIZE,   // size
+      Mailbox::BLOCK_SIZE,  // alignment
+      flags                 // allocation flags
    );
-   mailbox.unmapmem(ptr, 4096);
+
+   // Lock to obtain the bus address
+   uint32_t bus = mailbox.mem_lock(handle);
+
+   // Map one page of peripheral memory into user space
+   volatile uint8_t* ptr = mailbox.mapmem(
+      Mailbox::discover_peripheral_base(),
+      Mailbox::PAGE_SIZE
+   );
+
+   // … use ptr …
+
+   // Unmap, unlock, free, and close
+   mailbox.unmapmem(ptr, Mailbox::PAGE_SIZE);
    mailbox.mem_unlock(handle);
    mailbox.mem_free(handle);
    mailbox.mbox_close();

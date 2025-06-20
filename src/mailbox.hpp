@@ -42,7 +42,7 @@ public:
      * @brief Returns the underlying mailbox file descriptor.
      * @return File descriptor, or -1 if closed.
      */
-    int get_fd() const noexcept { return fd_; }
+    [[nodiscard]] int get_fd() const noexcept { return fd_; }
 
     /**
      * @brief Allocate memory via mailbox (maps to mem_alloc()).
@@ -50,7 +50,7 @@ public:
      * @param align Alignment in bytes.
      * @return Handle to allocated memory.
      */
-    uint32_t mem_alloc(uint32_t size, uint32_t align);
+    [[nodiscard]] uint32_t mem_alloc(uint32_t size, uint32_t align);
 
     /**
      * @brief Free memory via mailbox (maps to mem_free()).
@@ -64,7 +64,7 @@ public:
      * @param handle Handle returned by mem_alloc().
      * @return Bus address of locked memory.
      */
-    uint32_t mem_lock(uint32_t handle);
+    [[nodiscard]] uint32_t mem_lock(uint32_t handle);
 
     /**
      * @brief Unlock memory via mailbox (maps to mem_unlock()).
@@ -79,7 +79,7 @@ public:
      * @param size Size of region in bytes.
      * @return Pointer to mapped region.
      */
-    volatile uint8_t *mapmem(uint32_t base, size_t size);
+    [[nodiscard]] volatile uint8_t *mapmem(uint32_t base, size_t size);
 
     /**
      * @brief Unmap physical memory (maps to unmapmem()).
@@ -93,7 +93,7 @@ public:
      * Reads `/proc/device-tree/soc/ranges` at offsets 4 and 8. Falls back to 0x20000000.
      * @return Bus address for mmap offset.
      */
-    static uint32_t discover_peripheral_base();
+    [[nodiscard]] static uint32_t discover_peripheral_base();
 
     /// Mask of the high bits in a 32-bit bus address that indicate caching flags.
     static constexpr std::uintptr_t BUS_FLAG_MASK = 0xC0000000ULL;
@@ -117,7 +117,7 @@ private:
      * @return The mem_flag to pass into mem_alloc().
      * @throws std::runtime_error on an unrecognized chipset.
      */
-    uint32_t get_mem_flag();
+    [[nodiscard]] uint32_t get_mem_flag();
 };
 
 extern Mailbox mailbox;

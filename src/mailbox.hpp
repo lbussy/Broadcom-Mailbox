@@ -95,34 +95,46 @@ public:
      */
     [[nodiscard]] static uint32_t discover_peripheral_base();
 
-        /** 
+    /**
      * @brief Clear the bus caching flags from a bus address.
      * @param x Raw bus address with flags.
      * @return Physical address.
      */
     [[nodiscard]] static constexpr std::uintptr_t
-    bus_to_physical(std::uintptr_t x) noexcept { 
-        return x & ~BUS_FLAG_MASK; 
+    bus_to_physical(std::uintptr_t x) noexcept
+    {
+        return x & ~BUS_FLAG_MASK;
     }
 
-    /** 
+    /**
      * @brief Compute the offset into the peripheral mapping.
      * @param x Raw bus address.
      * @return Offset from the mapped base.
      */
     [[nodiscard]] static constexpr std::uintptr_t
-    offset_from_base(std::uintptr_t x) noexcept { 
-        return x - PERIPH_BUS_BASE; 
+    offset_from_base(std::uintptr_t x) noexcept
+    {
+        return x - PERIPH_BUS_BASE;
     }
 
-    /// Mask of the high bits in a 32-bit bus address that indicate caching flags.
+    /**
+     * @brief Mask of the high bits in a 32-bit bus address that indicate caching flags.
+     */
     static constexpr std::uintptr_t BUS_FLAG_MASK = 0xC0000000ULL;
-    /// Base bus address for peripheral registers (to compute offsets into the mapped window).
+
+    /**
+     * @brief Base bus address for peripheral registers (to compute offsets into the mapped window).
+     */
     static constexpr std::uintptr_t PERIPH_BUS_BASE = 0x7E000000ULL;
 
-    /// Standard page size (4 KiB) for mailbox allocations.
-    static constexpr size_t PAGE_SIZE  = 4 * 1024;
-    /// Standard block size (4 KiB) for mailbox allocations (same as PAGE_SIZE).
+    /**
+     * @brief Standard page size (4 KiB) for mailbox allocations.
+     */
+    static constexpr size_t PAGE_SIZE = 4 * 1024;
+
+    /**
+     * @brief Standard block size (4 KiB) for mailbox allocations (same as PAGE_SIZE).
+     */
     static constexpr size_t BLOCK_SIZE = 4 * 1024;
 
 private:

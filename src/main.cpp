@@ -21,7 +21,7 @@ int main()
         std::cout << "Allocated handle: " << handle << "\n";
 
         std::cout << "Locking handle.\n";
-        uint32_t bus_addr = ::mailbox.mem_lock(handle);
+        std::uintptr_t bus_addr = ::mailbox.mem_lock(handle);
         std::cout << "Locked bus address: 0x" << std::hex << bus_addr << std::dec << "\n";
 
         std::cout << "Unlocking handle.\n";

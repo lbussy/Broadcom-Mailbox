@@ -64,7 +64,7 @@ public:
      * @param handle Handle returned by mem_alloc().
      * @return Bus address of locked memory.
      */
-    [[nodiscard]] uint32_t mem_lock(uint32_t handle);
+    [[nodiscard]] std::uintptr_t mem_lock(uint32_t handle);
 
     /**
      * @brief Unlock memory via mailbox (maps to mem_unlock()).
@@ -76,7 +76,7 @@ public:
     /**
      * @brief Map physical memory (maps to mapmem()).
      * @param base Physical base address.
-     * @param size Size of region in bytes.
+     * @param size Length of region to map, in bytes.
      * @return Pointer to mapped region.
      */
     [[nodiscard]] volatile uint8_t *mapmem(uint32_t base, size_t size);
@@ -84,9 +84,9 @@ public:
     /**
      * @brief Unmap physical memory (maps to unmapmem()).
      * @param addr Pointer returned by mapmem().
-     * @param size Size of the mapped region.
+     * @param size Length of the region to unmap, in bytes.
      */
-    void unmapmem(volatile uint8_t *addr, uint32_t size);
+    void unmapmem(volatile uint8_t *addr, size_t size);
 
     /**
      * @brief Determine the SoC peripheral base address from the device tree.

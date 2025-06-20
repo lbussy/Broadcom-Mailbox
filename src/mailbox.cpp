@@ -68,9 +68,10 @@ uint32_t Mailbox::mem_free(uint32_t handle)
 }
 
 // Wrapper around C mem_lock()
-uint32_t Mailbox::mem_lock(uint32_t handle)
+std::uintptr_t Mailbox::mem_lock(uint32_t handle)
 {
-    return ::mem_lock(fd_, handle);
+    // Cast the 32-bit bus address from the C API up to a uintptr_t
+    return static_cast<std::uintptr_t>(::mem_lock(fd_, handle));
 }
 
 // Wrapper around C mem_unlock()
@@ -82,12 +83,14 @@ uint32_t Mailbox::mem_unlock(uint32_t handle)
 // Wrapper around C mapmem()
 volatile uint8_t *Mailbox::mapmem(uint32_t base, size_t size)
 {
+    // Legacy mapmem takes a 32-bit size
     return ::mapmem(base, static_cast<uint32_t>(size));
 }
 
 // Wrapper around C unmapmem()
 void Mailbox::unmapmem(volatile uint8_t *addr, uint32_t size)
 {
+    // Legacy unmapmem takes a 32-bit size
     ::unmapmem(addr, static_cast<uint32_t>(size));
 }
 

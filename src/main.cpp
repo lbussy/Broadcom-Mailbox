@@ -33,8 +33,10 @@ int main()
         std::cout << "Free result: " << free_res << "\n";
 
         std::cout << "Mapping memory region at peripheral base.\n";
-        volatile uint8_t *vaddr = ::mailbox.mapmem(base, Mailbox::BLOCK_SIZE);
-        std::cout << "Mapped address: " << vaddr << "\n";
+        volatile uint8_t *vaddr = ::mailbox.mapmem(base, Mailbox::PAGE_SIZE);
+        std::cout << "Mapped address: 0x"
+                  << std::hex << reinterpret_cast<std::uintptr_t>(vaddr)
+                  << std::dec << "\n";
 
         std::cout << "Unmapping memory region.\n";
         ::mailbox.unmapmem(vaddr, Mailbox::PAGE_SIZE);

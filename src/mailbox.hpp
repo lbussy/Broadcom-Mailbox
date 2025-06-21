@@ -4,44 +4,26 @@
 
 // C++ Standard Library
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
-/**
- * @brief C++ wrapper around the legacy mailbox C interface.
- *
- * Encapsulates open/close and memory operations behind RAII,
- * and provides utility to discover peripheral base address.
- */
 class Mailbox
 {
 public:
-    /**
-     * @brief Default-construct and open the mailbox device.
-     * @throws std::runtime_error on failure.
-     */
+    // TODO: Doxygen
     Mailbox();
 
-    /**
-     * @brief Close the mailbox device on destruction.
-     */
+    // TODO: Doxygen
     ~Mailbox();
 
-    /**
-     * @brief Open the mailbox device (maps to mbox_open()).
-     * @throws std::runtime_error on failure.
-     */
+    // TODO: Doxygen
     void mbox_open();
 
-    /**
-     * @brief Close the mailbox device (maps to mbox_close()).
-     */
+    // TODO: Doxygen
     void mbox_close();
 
-    /**
-     * @brief Returns the underlying mailbox file descriptor.
-     * @return File descriptor, or -1 if closed.
-     */
+    // TODO: Doxygen
     [[nodiscard]] int get_fd() const noexcept { return fd_; }
 
     /**
@@ -150,6 +132,9 @@ private:
      * @throws std::runtime_error on an unrecognized chipset.
      */
     [[nodiscard]] uint32_t get_mem_flag();
+
+    // TODO: Doxygen
+    static std::optional<uint32_t> read_dt_range_helper(const char *path, std::size_t offset);
 };
 
 extern Mailbox mailbox;

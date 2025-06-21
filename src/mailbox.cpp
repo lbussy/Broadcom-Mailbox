@@ -23,20 +23,21 @@ extern "C"
 }
 #endif
 
+// TODO: Doxygen
 Mailbox mailbox;
 
-// Constructor: open on creation
+// TODO: Doxygen
 Mailbox::Mailbox()
 {
 }
 
-// Destructor: close on destruction
+// TODO: Doxygen
 Mailbox::~Mailbox()
 {
     mbox_close();
 }
 
-// Wrapper around C mbox_open()
+// TODO: Doxygen
 void Mailbox::mbox_open()
 {
     if (fd_ >= 0)
@@ -55,7 +56,7 @@ void Mailbox::mbox_open()
     fd_ = file_desc;
 }
 
-// Wrapper around C mbox_close()
+// TODO: Doxygen
 void Mailbox::mbox_close()
 {
     if (fd_ < 0)
@@ -73,63 +74,40 @@ void Mailbox::mbox_close()
     fd_ = -1;
 }
 
-// Wrapper around C mem_alloc()
 uint32_t Mailbox::mem_alloc(uint32_t size, uint32_t align)
 {
     return ::mem_alloc(fd_, size, align, get_mem_flag());
 }
 
-// Wrapper around C mem_free()
 uint32_t Mailbox::mem_free(uint32_t handle)
 {
     return ::mem_free(fd_, handle);
 }
 
-// Wrapper around C mem_lock()
 std::uintptr_t Mailbox::mem_lock(uint32_t handle)
 {
     // Cast the 32-bit bus address from the C API up to a uintptr_t
     return static_cast<std::uintptr_t>(::mem_lock(fd_, handle));
 }
 
-// Wrapper around C mem_unlock()
 uint32_t Mailbox::mem_unlock(uint32_t handle)
 {
     return ::mem_unlock(fd_, handle);
 }
 
-// Wrapper around C mapmem()
 volatile uint8_t *Mailbox::mapmem(uint32_t base, size_t size)
 {
     // Legacy mapmem takes a 32-bit size
     return ::mapmem(base, static_cast<uint32_t>(size));
 }
 
-// Wrapper around C unmapmem()
 void Mailbox::unmapmem(volatile uint8_t *addr, uint32_t size)
 {
     // Legacy unmapmem takes a 32-bit size
     ::unmapmem(addr, static_cast<uint32_t>(size));
 }
 
-static std::optional<uint32_t> read_dt_range_helper(const char *path, std::size_t offset)
-{
-    std::ifstream f(path, std::ios::binary);
-    if (!f)
-        return std::nullopt;
-
-    f.seekg(offset);
-    uint32_t be_val = 0;
-    f.read(reinterpret_cast<char *>(&be_val), sizeof(be_val));
-    if (!f)
-        return std::nullopt;
-
-    // convert from big-endian on-disk to CPU-endian
-    uint32_t val = be32toh(be_val);
-    return val;
-}
-
-// Implementation of discover_peripheral_base()
+// TODO: Doxygen
 uint32_t Mailbox::discover_peripheral_base()
 {
     uint32_t base = 0x20000000;
@@ -140,6 +118,7 @@ uint32_t Mailbox::discover_peripheral_base()
     return base;
 }
 
+// TODO: Doxygen
 uint32_t Mailbox::get_mem_flag()
 {
     static std::optional<unsigned> cached_rev;
@@ -180,4 +159,22 @@ uint32_t Mailbox::get_mem_flag()
     throw std::runtime_error(
         std::string("Mailbox::get_mem_flag(): unknown chipset ") +
         std::string(to_string(proc)));
+}
+
+// TODO: Doxygen
+std::optional<uint32_t> Mailbox::read_dt_range_helper(const char *path, std::size_t offset)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f)
+        return std::nullopt;
+
+    f.seekg(offset);
+    uint32_t be_val = 0;
+    f.read(reinterpret_cast<char *>(&be_val), sizeof(be_val));
+    if (!f)
+        return std::nullopt;
+
+    // convert from big-endian on-disk to CPU-endian
+    uint32_t val = be32toh(be_val);
+    return val;
 }

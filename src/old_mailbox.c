@@ -102,54 +102,6 @@ static int mbox_property(int file_desc, void *buf)
     return ret_val;
 }
 
-unsigned mem_alloc(int file_desc, unsigned size, unsigned align, unsigned flags)
-{
-    int i = 0;
-    unsigned p[32];
-    p[i++] = 0;          // size
-    p[i++] = 0x00000000; // process request
-
-    p[i++] = 0x3000c; // (the tag id)
-    p[i++] = 12;      // (size of the buffer)
-    p[i++] = 12;      // (size of the data)
-    p[i++] = size;    // (num bytes? or pages?)
-    p[i++] = align;   // (alignment)
-    p[i++] = flags;   // (MEM_FLAG_L1_NONALLOCATING)
-
-    p[i++] = 0x00000000;  // end tag
-    p[0] = i * sizeof *p; // actual size
-
-    if (mbox_property(file_desc, p) < 0)
-    {
-        printf("mem_alloc: mbox_property() error, abort!\n");
-        exit(-1);
-    }
-    return p[5];
-}
-
-unsigned mem_free(int file_desc, unsigned handle)
-{
-    int i = 0;
-    unsigned p[32];
-    p[i++] = 0;          // size
-    p[i++] = 0x00000000; // process request
-
-    p[i++] = 0x3000f; // (the tag id)
-    p[i++] = 4;       // (size of the buffer)
-    p[i++] = 4;       // (size of the data)
-    p[i++] = handle;
-
-    p[i++] = 0x00000000;  // end tag
-    p[0] = i * sizeof *p; // actual size
-
-    if (mbox_property(file_desc, p) < 0)
-    {
-        printf("mem_free: mbox_property() error, ignoring\n");
-        return 0;
-    }
-    return p[5];
-}
-
 /**
  * @brief Locks memory using the mailbox interface.
  *

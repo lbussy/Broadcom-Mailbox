@@ -25,26 +25,6 @@ extern "C" {
 #endif
 
 /**
- * @brief Allocates memory using the mailbox interface.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param size Size of memory to allocate in bytes.
- * @param align Alignment of memory.
- * @param flags Flags specifying memory properties.
- * @return Handle to the allocated memory.
- */
-uint32_t mem_alloc(int file_desc, uint32_t size, uint32_t align, uint32_t flags);
-
-/**
- * @brief Frees previously allocated memory.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle Handle to the memory to free.
- * @return Result of the operation (0 for error, non-zero for success).
- */
-uint32_t mem_free(int file_desc, uint32_t handle);
-
-/**
  * @brief Locks allocated memory.
  *
  * @param file_desc File descriptor returned by mbox_open().

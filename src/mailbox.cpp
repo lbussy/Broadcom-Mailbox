@@ -14,16 +14,19 @@
 #include <fcntl.h>
 #include <linux/ioctl.h> // for IOCTL_MBOX_PROPERTY
 #include <sys/ioctl.h>
+#include <sys/mman.h> // for mmap, munmap
 #include <unistd.h>
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-#include "old_mailbox.h" // legacy C API
-#ifdef __cplusplus
-}
-#endif
+/** New kernel version (>= 4.1) major device number. */
+#define MAJOR_NUM_A 249
+/** Older kernel version major device number. */
+#define MAJOR_NUM_B 100
+/** IOCTL command for mailbox property interface. */
+#define IOCTL_MBOX_PROPERTY _IOWR(MAJOR_NUM_B, 0, char *)
+/** Name of the mailbox device file. */
+#define DEVICE_FILE_NAME "/dev/vcio"
+/** Name of the memory device file. */
+#define MEM_FILE_NAME "/dev/mem"
 
 // TODO: Doxygen
 Mailbox mailbox;
@@ -207,16 +210,62 @@ uint32_t Mailbox::mem_unlock(uint32_t handle)
     return buf[5];
 }
 
+// TODO: Doxygen
 volatile uint8_t *Mailbox::mapmem(uint32_t base, size_t size)
 {
-    // Legacy mapmem takes a 32-bit size
-    return ::mapmem(base, static_cast<uint32_t>(size));
+    // Compute page‐aligned base and offset within page
+    const unsigned offset = base % PAGE_SIZE;
+    const off_t aligned_base = static_cast<off_t>(base - offset);
+
+    // Open /dev/mem
+    int mem_fd = ::open(MEM_FILE_NAME, O_RDWR | O_SYNC);
+    if (mem_fd < 0)
+    {
+        int e = errno;
+        throw std::system_error(
+            e, std::generic_category(),
+            std::string("Mailbox::mapmem(): cannot open ") + MEM_FILE_NAME);
+    }
+
+    // mmap the physical region
+    void *mapped = ::mmap(
+        nullptr,
+        size,
+        PROT_READ | PROT_WRITE,
+        MAP_SHARED,
+        mem_fd,
+        aligned_base);
+    ::close(mem_fd);
+
+    if (mapped == MAP_FAILED)
+    {
+        int e = errno;
+        throw std::system_error(
+            e, std::generic_category(),
+            "Mailbox::mapmem(): mmap failed");
+    }
+
+    // Return pointer adjusted by the page‐offset
+    return static_cast<uint8_t *>(mapped) + offset;
 }
 
-void Mailbox::unmapmem(volatile uint8_t *addr, uint32_t size)
+// TODO: Doxygen
+void Mailbox::unmapmem(volatile uint8_t *addr, size_t size)
 {
-    // Legacy unmapmem takes a 32-bit size
-    ::unmapmem(addr, static_cast<uint32_t>(size));
+    // Compute the original mapping base by stripping the page‐offset
+    auto addr_val = reinterpret_cast<std::uintptr_t>(addr);
+    const std::size_t offset = addr_val % PAGE_SIZE;
+    void *base = reinterpret_cast<void *>(addr_val - offset);
+
+    // Unmap and throw on failure
+    if (::munmap(base, size) != 0)
+    {
+        int e = errno;
+        throw std::system_error(
+            e,
+            std::generic_category(),
+            "Mailbox::unmapmem(): munmap failed");
+    }
 }
 
 // TODO: Doxygen

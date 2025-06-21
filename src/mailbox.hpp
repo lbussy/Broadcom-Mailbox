@@ -26,41 +26,19 @@ public:
     // TODO: Doxygen
     [[nodiscard]] int get_fd() const noexcept { return fd_; }
 
-    /**
-     * @brief Allocate memory via mailbox (maps to mem_alloc()).
-     * @param size  Number of bytes to allocate.
-     * @param align Alignment in bytes.
-     * @return Handle to allocated memory.
-     */
+    // TODO: Doxygen
     [[nodiscard]] uint32_t mem_alloc(uint32_t size, uint32_t align);
 
-    /**
-     * @brief Free memory via mailbox (maps to mem_free()).
-     * @param handle Handle returned by mem_alloc().
-     * @return Result code (non-zero on success).
-     */
+    // TODO: Doxygen
     uint32_t mem_free(uint32_t handle);
 
-    /**
-     * @brief Lock memory via mailbox (maps to mem_lock()).
-     * @param handle Handle returned by mem_alloc().
-     * @return Bus address of locked memory.
-     */
+    // TODO: Doxygen
     [[nodiscard]] std::uintptr_t mem_lock(uint32_t handle);
 
-    /**
-     * @brief Unlock memory via mailbox (maps to mem_unlock()).
-     * @param handle Handle returned by mem_alloc().
-     * @return Result code (non-zero on success).
-     */
+    // TODO: Doxygen
     uint32_t mem_unlock(uint32_t handle);
 
-    /**
-     * @brief Map physical memory (maps to mapmem()).
-     * @param base Physical base address.
-     * @param size Length of region to map, in bytes.
-     * @return Pointer to mapped region.
-     */
+    // TODO: Doxygen
     [[nodiscard]] volatile uint8_t *mapmem(uint32_t base, size_t size);
 
     /**
@@ -70,29 +48,17 @@ public:
      */
     void unmapmem(volatile uint8_t *addr, size_t size);
 
-    /**
-     * @brief Determine the SoC peripheral base address from the device tree.
-     * Reads `/proc/device-tree/soc/ranges` at offsets 4 and 8. Falls back to 0x20000000.
-     * @return Bus address for mmap offset.
-     */
+    // TODO: Doxygen
     [[nodiscard]] static uint32_t discover_peripheral_base();
 
-    /**
-     * @brief Clear the bus caching flags from a bus address.
-     * @param x Raw bus address with flags.
-     * @return Physical address.
-     */
+    // TODO: Doxygen
     [[nodiscard]] static constexpr std::uintptr_t
     bus_to_physical(std::uintptr_t x) noexcept
     {
         return x & ~BUS_FLAG_MASK;
     }
 
-    /**
-     * @brief Compute the offset into the peripheral mapping.
-     * @param x Raw bus address.
-     * @return Offset from the mapped base.
-     */
+    // TODO: Doxygen
     [[nodiscard]] static constexpr std::uintptr_t
     offset_from_base(std::uintptr_t x) noexcept
     {

@@ -145,15 +145,66 @@ uint32_t Mailbox::mem_free(uint32_t handle)
     return buf[5];
 }
 
+// TODO: Doxygen
 std::uintptr_t Mailbox::mem_lock(uint32_t handle)
 {
-    // Cast the 32-bit bus address from the C API up to a uintptr_t
-    return static_cast<std::uintptr_t>(::mem_lock(fd_, handle));
+    constexpr uint32_t TAG_LOCK = 0x3000D;   // lock tag
+    constexpr uint32_t END_TAG = 0x00000000; // end-of-tags marker
+
+    std::array<uint32_t, 7> buf = {
+        0,        // [0] Total message size
+        0,        // [1] Request code
+        TAG_LOCK, // [2] Tag for mem_lock
+        4,        // [3] Buffer size
+        4,        // [4] Data size
+        handle,   // [5] Handle
+        END_TAG   // [6] End tag
+    };
+    buf[0] = static_cast<uint32_t>(buf.size() * sizeof(uint32_t));
+
+    if (::ioctl(fd_, IOCTL_MBOX_PROPERTY, buf.data()) < 0)
+    {
+        int err = errno;
+        throw std::system_error(
+            err,
+            std::generic_category(),
+            "Mailbox::mem_lock(): ioctl failed");
+    }
+
+    return static_cast<std::uintptr_t>(buf[5]);
 }
 
+// TODO: Doxygen
 uint32_t Mailbox::mem_unlock(uint32_t handle)
 {
-    return ::mem_unlock(fd_, handle);
+    // Tag definitions
+    constexpr uint32_t TAG_UNLOCK = 0x3000E; // mailbox “unlock” tag
+    constexpr uint32_t END_TAG = 0x00000000; // end marker
+
+    // Build the property buffer
+    std::array<uint32_t, 7> buf = {
+        0,          // [0] Total message size (bytes), will fill in
+        0,          // [1] Request (0)
+        TAG_UNLOCK, // [2] Tag id
+        4,          // [3] Value buffer size
+        4,          // [4] Value length
+        handle,     // [5] The handle to unlock
+        END_TAG     // [6] End tag
+    };
+    buf[0] = static_cast<uint32_t>(buf.size() * sizeof(uint32_t));
+
+    // Issue the ioctl
+    if (::ioctl(fd_, IOCTL_MBOX_PROPERTY, buf.data()) < 0)
+    {
+        int e = errno;
+        throw std::system_error(
+            e,
+            std::generic_category(),
+            "Mailbox::mem_unlock(): ioctl failed");
+    }
+
+    // Response value is in buf[5]
+    return buf[5];
 }
 
 volatile uint8_t *Mailbox::mapmem(uint32_t base, size_t size)

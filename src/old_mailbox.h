@@ -25,24 +25,6 @@ extern "C" {
 #endif
 
 /**
- * @brief Locks allocated memory.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle Handle to the memory to lock.
- * @return Result of the operation (handle on success).
- */
-uint32_t mem_lock(int file_desc, uint32_t handle);
-
-/**
- * @brief Unlocks locked memory.
- *
- * @param file_desc File descriptor returned by mbox_open().
- * @param handle Handle to the memory to unlock.
- * @return Result of the operation (0 for error, non-zero for success).
- */
-uint32_t mem_unlock(int file_desc, uint32_t handle);
-
-/**
  * @brief Maps physical memory into the process's address space.
  *
  * @param base Base address of the memory to map.

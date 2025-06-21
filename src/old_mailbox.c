@@ -215,23 +215,23 @@ unsigned mem_unlock(int file_desc, unsigned handle)
  *
  * @return File descriptor for the opened mailbox device, or exits on failure.
  */
-int mbox_open()
-{
-    int file_desc = open(DEVICE_FILE_NAME, O_RDWR);
-    if (file_desc < 0)
-    {
-        perror("Error: Unable to open mailbox device");
-        exit(EXIT_FAILURE);
-    }
-    return file_desc;
-}
+// int mbox_open()
+// {
+//     int file_desc = open(DEVICE_FILE_NAME, O_RDWR);
+//     if (file_desc < 0)
+//     {
+//         perror("Error: Unable to open mailbox device");
+//         exit(EXIT_FAILURE);
+//     }
+//     return file_desc;
+// }
 
 /**
  * @brief Closes the mailbox device.
  *
  * @param file_desc File descriptor for the mailbox to close.
  */
-void mbox_close(int file_desc)
-{
-    close(file_desc);
-}
+// void mbox_close(int file_desc)
+// {
+//     close(file_desc);
+// }

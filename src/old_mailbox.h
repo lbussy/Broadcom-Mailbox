@@ -29,14 +29,14 @@ extern "C" {
  *
  * @return File descriptor for the mailbox device, or -1 if opening fails.
  */
-int mbox_open();
+// int mbox_open();
 
 /**
  * @brief Closes the mailbox device.
  *
  * @param file_desc File descriptor returned by mbox_open().
  */
-void mbox_close(int file_desc);
+// void mbox_close(int file_desc);
 
 /**
  * @brief Allocates memory using the mailbox interface.

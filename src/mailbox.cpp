@@ -2,9 +2,11 @@
 #include "bcm_model.hpp"
 
 // C++ Standard Library
+#include <cerrno>
 #include <cstdio>
 #include <fstream>
 #include <optional>
+#include <system_error>
 
 // POSIX/system headers
 #include <endian.h> // for be32toh()
@@ -38,21 +40,37 @@ Mailbox::~Mailbox()
 void Mailbox::mbox_open()
 {
     if (fd_ >= 0)
-        throw std::runtime_error("Mailbox already open");
-    fd_ = ::mbox_open();
-    if (fd_ < 0)
-        throw std::runtime_error("mbox_open() failed");
-    return;
+        throw std::logic_error("Mailbox is already open");
+
+    int file_desc = ::open(DEVICE_FILE_NAME, O_RDWR);
+    if (file_desc < 0)
+    {
+        int err = errno;
+        throw std::system_error(
+            err,
+            std::generic_category(),
+            std::string("Mailbox::mbox_open(): failed to open ") + DEVICE_FILE_NAME);
+    }
+
+    fd_ = file_desc;
 }
 
 // Wrapper around C mbox_close()
 void Mailbox::mbox_close()
 {
-    if (fd_ >= 0)
+    if (fd_ < 0)
+        return;
+
+    if (::close(fd_) < 0)
     {
-        ::mbox_close(fd_);
-        fd_ = -1;
+        int err = errno;
+        throw std::system_error(
+            err,
+            std::generic_category(),
+            std::string("Mailbox::mbox_close(): failed to close ") + DEVICE_FILE_NAME);
     }
+
+    fd_ = -1;
 }
 
 // Wrapper around C mem_alloc()

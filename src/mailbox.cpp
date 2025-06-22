@@ -68,7 +68,7 @@ Mailbox mailbox;
  * @brief Default-constructs a Mailbox instance.
  *
  * The mailbox device is not opened by the constructor;
- * call mbox_open() to open the underlying `/dev/vcio` interface.
+ * call open() to open the underlying `/dev/vcio` interface.
  */
 Mailbox::Mailbox()
 {
@@ -96,7 +96,7 @@ Mailbox::~Mailbox()
  * @throws std::logic_error   If the mailbox is already open.
  * @throws std::system_error  If the underlying open() call fails.
  */
-void Mailbox::mbox_open()
+void Mailbox::open()
 {
     if (fd_ >= 0)
         throw std::logic_error("Mailbox is already open");
@@ -108,7 +108,7 @@ void Mailbox::mbox_open()
         throw std::system_error(
             err,
             std::generic_category(),
-            std::string("Mailbox::mbox_open(): failed to open ") + DEVICE_FILE_NAME);
+            std::string("Mailbox::open(): failed to open ") + DEVICE_FILE_NAME);
     }
 
     fd_ = file_desc;

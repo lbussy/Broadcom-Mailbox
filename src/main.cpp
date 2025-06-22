@@ -36,7 +36,7 @@ int main()
     try
     {
         std::cout << "Opening mailbox.\n";
-        ::mailbox.mbox_open();
+        ::mailbox.open();
 
         std::cout << "Mailbox FD: " << ::mailbox.get_fd() << "\n";
 

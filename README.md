@@ -4,7 +4,7 @@ A **modern C++17** implementation of the Raspberry Pi GPU mailbox interface—p
 
 ## 📌 Features
 
-- New C++17 rewrite of the legacy Broadcom C API (`mbox_open`, `mem_alloc`, etc.).
+- New C++17 rewrite of the legacy Broadcom C API (`open`, `mem_alloc`, etc.).
 - `[[nodiscard]]` annotations on critical APIs to prevent dropped error codes.
 - Compile‑time constants: `PAGE_SIZE`, `BLOCK_SIZE`, `BUS_FLAG_MASK`, `PERIPH_BUS_BASE`.
 - Correct big‑endian parsing of `/proc/device-tree/soc/ranges` for accurate peripheral base discovery (`discover_peripheral_base()`).
@@ -42,7 +42,7 @@ A **modern C++17** implementation of the Raspberry Pi GPU mailbox interface—p
 4. **Call the API**
 
    ```cpp
-   mailbox.mbox_open();  // open the device
+   mailbox.open();  // open the device
 
    uint32_t handle = mailbox.mem_alloc(
        Mailbox::PAGE_SIZE,   // size

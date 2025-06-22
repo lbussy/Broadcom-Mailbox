@@ -43,7 +43,7 @@ public:
      * @brief Default-constructs a Mailbox instance.
      *
      * The mailbox device is not opened by the constructor;
-     * call mbox_open() to open the underlying `/dev/vcio` interface.
+     * call open() to open the underlying `/dev/vcio` interface.
      */
     Mailbox();
 
@@ -66,7 +66,7 @@ public:
      * @throws std::logic_error   If the mailbox is already open.
      * @throws std::system_error  If the underlying open() call fails.
      */
-    void mbox_open();
+    void open();
 
     /**
      * @brief Closes the mailbox device.
@@ -83,7 +83,7 @@ public:
     /**
      * @brief Get the underlying mailbox file descriptor.
      *
-     * @return The file descriptor obtained via `mbox_open()`, or -1 if the mailbox is closed.
+     * @return The file descriptor obtained via `open()`, or -1 if the mailbox is closed.
      */
     [[nodiscard]] int get_fd() const noexcept { return fd_; }
 

@@ -4,10 +4,10 @@ A **modern C++17** implementation of the Raspberry Pi GPU mailbox interface—p
 
 ## 📌 Features
 
-- New C++17 rewrite of the legacy Broadcom C API (`open`, `mem_alloc`, etc.).
+- New C++17 rewrite of the legacy Broadcom C API (`open`, `memAlloc`, etc.).
 - `[[nodiscard]]` annotations on critical APIs to prevent dropped error codes.
 - Compile‑time constants: `PAGE_SIZE`, `BLOCK_SIZE`, `BUS_FLAG_MASK`, `PERIPH_BUS_BASE`.
-- Correct big‑endian parsing of `/proc/device-tree/soc/ranges` for accurate peripheral base discovery (`discover_peripheral_base()`).
+- Correct big‑endian parsing of `/proc/device-tree/soc/ranges` for accurate peripheral base discovery (`discoverPeripheralBase()`).
 - Throws `std::runtime_error` or `std::system_error` instead of exiting on failure.
 - Lightweight: No external dependencies beyond the C++17 standard library and Linux kernel headers.
 
@@ -44,25 +44,25 @@ A **modern C++17** implementation of the Raspberry Pi GPU mailbox interface—p
    ```cpp
    mailbox.open();  // open the device
 
-   uint32_t handle = mailbox.mem_alloc(
+   uint32_t handle = mailbox.memAlloc(
        Mailbox::PAGE_SIZE,   // size
        Mailbox::BLOCK_SIZE,  // alignment
        flags                 // mailbox flags
    );
 
-   std::uintptr_t bus = mailbox.mem_lock(handle);
+   std::uintptr_t bus = mailbox.memLock(handle);
 
-   volatile uint8_t* ptr = mailbox.mapmem(
-       Mailbox::discover_peripheral_base(),
+   volatile uint8_t* ptr = mailbox.mapMem(
+       Mailbox::discoverPeripheralBase(),
        Mailbox::PAGE_SIZE
    );
 
    // … use ptr …
 
-   mailbox.unmapmem(ptr, Mailbox::PAGE_SIZE);
-   mailbox.mem_unlock(handle);
-   mailbox.mem_free(handle);
-   mailbox.mbox_close();
+   mailbox.unMapMem(ptr, Mailbox::PAGE_SIZE);
+   mailbox.memUnlock(handle);
+   mailbox.memFree(handle);
+   mailbox.close();
    ```
 
 ## 🔧 Build Requirements

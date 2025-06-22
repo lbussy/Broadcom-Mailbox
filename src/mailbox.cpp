@@ -70,7 +70,7 @@ Mailbox::Mailbox()
  */
 Mailbox::~Mailbox()
 {
-    mbox_close();
+    close();
 }
 
 /**
@@ -112,7 +112,7 @@ void Mailbox::open()
  *
  * @throws std::system_error  If the underlying close() call fails.
  */
-void Mailbox::mbox_close()
+void Mailbox::close()
 {
     if (fd_ < 0)
         return;
@@ -123,7 +123,7 @@ void Mailbox::mbox_close()
         throw std::system_error(
             err,
             std::generic_category(),
-            std::string("Mailbox::mbox_close(): failed to close ") + DEVICE_FILE_NAME);
+            std::string("Mailbox::close(): failed to close ") + DEVICE_FILE_NAME);
     }
 
     fd_ = -1;
@@ -141,7 +141,7 @@ void Mailbox::mbox_close()
  * @return A handle (uint32_t) identifying the allocated memory block.
  * @throws std::system_error if the ioctl to the mailbox device fails.
  */
-uint32_t Mailbox::mem_alloc(uint32_t size, uint32_t align)
+uint32_t Mailbox::memAlloc(uint32_t size, uint32_t align)
 {
     constexpr uint32_t TAG_ALLOC = 0x3000C;  // allocation tag
     constexpr uint32_t END_TAG = 0x00000000; // end-of-tags marker
@@ -151,7 +151,7 @@ uint32_t Mailbox::mem_alloc(uint32_t size, uint32_t align)
     std::array<uint32_t, 9> buf = {
         0,         // [0] total message size (bytes) - to be filled below
         0,         // [1] request code (0 = request)
-        TAG_ALLOC, // [2] tag identifier for mem_alloc
+        TAG_ALLOC, // [2] tag identifier for memAlloc
         12,        // [3] value buffer size (bytes)
         12,        // [4] value length (bytes)
         size,      // [5] allocation size in bytes
@@ -169,7 +169,7 @@ uint32_t Mailbox::mem_alloc(uint32_t size, uint32_t align)
         throw std::system_error(
             err,
             std::generic_category(),
-            "Mailbox::mem_alloc(): ioctl failed");
+            "Mailbox::memAlloc(): ioctl failed");
     }
 
     // On success, the handle is returned in buf[5]
@@ -182,11 +182,11 @@ uint32_t Mailbox::mem_alloc(uint32_t size, uint32_t align)
  * Constructs and sends a mailbox property message to release a memory block
  * identified by the given handle.
  *
- * @param handle Handle returned by a prior call to mem_alloc().
+ * @param handle Handle returned by a prior call to memAlloc().
  * @return Result code from the mailbox property response (non-zero indicates success).
  * @throws std::system_error if the ioctl to the mailbox device fails.
  */
-uint32_t Mailbox::mem_free(uint32_t handle)
+uint32_t Mailbox::memFree(uint32_t handle)
 {
     constexpr uint32_t TAG_FREE = 0x3000F;   // Free tag
     constexpr uint32_t END_TAG = 0x00000000; // End-of-tags marker
@@ -195,7 +195,7 @@ uint32_t Mailbox::mem_free(uint32_t handle)
     std::array<uint32_t, 7> buf = {
         0,        // [0] Total message size (bytes)
         0,        // [1] Request code (0 = request)
-        TAG_FREE, // [2] Tag identifier for mem_free
+        TAG_FREE, // [2] Tag identifier for memFree
         4,        // [3] Value buffer size (bytes)
         4,        // [4] Value length (bytes)
         handle,   // [5] Handle to free
@@ -211,7 +211,7 @@ uint32_t Mailbox::mem_free(uint32_t handle)
         throw std::system_error(
             err,
             std::generic_category(),
-            "Mailbox::mem_free(): ioctl failed");
+            "Mailbox::memFree(): ioctl failed");
     }
 
     // On success, the result code is returned in buf[5]
@@ -224,11 +224,11 @@ uint32_t Mailbox::mem_free(uint32_t handle)
  * Constructs and sends a mailbox property message to lock a memory block
  * identified by the given handle, returning its bus address for DMA use.
  *
- * @param handle Handle returned by a prior call to mem_alloc().
+ * @param handle Handle returned by a prior call to memAlloc().
  * @return Physical (bus) address of the locked memory block.
  * @throws std::system_error if the ioctl to the mailbox device fails.
  */
-std::uintptr_t Mailbox::mem_lock(uint32_t handle)
+std::uintptr_t Mailbox::memLock(uint32_t handle)
 {
     constexpr uint32_t TAG_LOCK = 0x3000D;   // lock tag
     constexpr uint32_t END_TAG = 0x00000000; // end-of-tags marker
@@ -236,7 +236,7 @@ std::uintptr_t Mailbox::mem_lock(uint32_t handle)
     std::array<uint32_t, 7> buf = {
         0,        // [0] Total message size
         0,        // [1] Request code
-        TAG_LOCK, // [2] Tag for mem_lock
+        TAG_LOCK, // [2] Tag for memLock
         4,        // [3] Buffer size
         4,        // [4] Data size
         handle,   // [5] Handle
@@ -250,7 +250,7 @@ std::uintptr_t Mailbox::mem_lock(uint32_t handle)
         throw std::system_error(
             err,
             std::generic_category(),
-            "Mailbox::mem_lock(): ioctl failed");
+            "Mailbox::memLock(): ioctl failed");
     }
 
     return static_cast<std::uintptr_t>(buf[5]);
@@ -262,11 +262,11 @@ std::uintptr_t Mailbox::mem_lock(uint32_t handle)
  * Constructs and sends a mailbox property message to unlock a memory block
  * identified by the given handle, allowing it to be freed or reallocated.
  *
- * @param handle Handle returned by mem_alloc() and previously passed to mem_lock().
+ * @param handle Handle returned by memAlloc() and previously passed to memLock().
  * @return Result code: non-zero indicates success.
  * @throws std::system_error if the ioctl to the mailbox device fails.
  */
-uint32_t Mailbox::mem_unlock(uint32_t handle)
+uint32_t Mailbox::memUnlock(uint32_t handle)
 {
     // Tag definitions
     constexpr uint32_t TAG_UNLOCK = 0x3000E; // mailbox “unlock” tag
@@ -291,7 +291,7 @@ uint32_t Mailbox::mem_unlock(uint32_t handle)
         throw std::system_error(
             e,
             std::generic_category(),
-            "Mailbox::mem_unlock(): ioctl failed");
+            "Mailbox::memUnlock(): ioctl failed");
     }
 
     // Response value is in buf[5]
@@ -311,7 +311,7 @@ uint32_t Mailbox::mem_unlock(uint32_t handle)
  * @return A pointer to the mapped memory region, adjusted by the page offset.
  * @throws std::system_error if opening `/dev/mem` or the mmap operation fails.
  */
-volatile uint8_t *Mailbox::mapmem(uint32_t base, size_t size)
+volatile uint8_t *Mailbox::mapMem(uint32_t base, size_t size)
 {
     // Compute page‐aligned base and offset within page
     const unsigned offset = base % PAGE_SIZE;
@@ -324,7 +324,7 @@ volatile uint8_t *Mailbox::mapmem(uint32_t base, size_t size)
         int e = errno;
         throw std::system_error(
             e, std::generic_category(),
-            std::string("Mailbox::mapmem(): cannot open ") + MEM_FILE_NAME);
+            std::string("Mailbox::mapMem(): cannot open ") + MEM_FILE_NAME);
     }
 
     // mmap the physical region
@@ -342,7 +342,7 @@ volatile uint8_t *Mailbox::mapmem(uint32_t base, size_t size)
         int e = errno;
         throw std::system_error(
             e, std::generic_category(),
-            "Mailbox::mapmem(): mmap failed");
+            "Mailbox::mapMem(): mmap failed");
     }
 
     // Return pointer adjusted by the page‐offset
@@ -353,14 +353,14 @@ volatile uint8_t *Mailbox::mapmem(uint32_t base, size_t size)
  * @brief Unmap a previously mapped bus address region.
  *
  * Calculates the original mapping base by removing the page offset
- * from the pointer returned by mapmem(), then calls munmap() to
+ * from the pointer returned by mapMem(), then calls munmap() to
  * release the mapping.
  *
- * @param addr Pointer returned by mapmem(), adjusted into the mapped region.
- * @param size The number of bytes that were mapped (same size passed to mapmem()).
+ * @param addr Pointer returned by mapMem(), adjusted into the mapped region.
+ * @param size The number of bytes that were mapped (same size passed to mapMem()).
  * @throws std::system_error if munmap() fails.
  */
-void Mailbox::unmapmem(volatile uint8_t *addr, size_t size)
+void Mailbox::unMapMem(volatile uint8_t *addr, size_t size)
 {
     // Compute the original mapping base by stripping the page‐offset
     auto addr_val = reinterpret_cast<std::uintptr_t>(addr);
@@ -374,7 +374,7 @@ void Mailbox::unmapmem(volatile uint8_t *addr, size_t size)
         throw std::system_error(
             e,
             std::generic_category(),
-            "Mailbox::unmapmem(): munmap failed");
+            "Mailbox::unMapMem(): munmap failed");
     }
 }
 
@@ -388,7 +388,7 @@ void Mailbox::unmapmem(volatile uint8_t *addr, size_t size)
  *
  * @return The bus-addressable peripheral base to use for mmap offsets.
  */
-uint32_t Mailbox::discover_peripheral_base()
+uint32_t Mailbox::discoverPeripheralBase()
 {
     uint32_t base = 0x20000000;
     if (auto v = read_dt_range_helper("/proc/device-tree/soc/ranges", 4); v && *v)
@@ -403,11 +403,11 @@ uint32_t Mailbox::discover_peripheral_base()
  *
  * Parses `/proc/cpuinfo` (cached on first call) to extract the hardware revision,
  * maps that to a BCM processor ID, and then returns the correct
- * `MEM_FLAG_*` for `mem_alloc()`:
+ * `MEM_FLAG_*` for `memAlloc()`:
  *   - BCM2835 (RPi1): non‐allocating L1 flag (0x0C)
  *   - BCM2836/37 (RPi2/3) and BCM2711 (RPi4): normal L2 alloc flag (0x04)
  *
- * @return The 32-bit flags value to pass to `mem_alloc()`.
+ * @return The 32-bit flags value to pass to `memAlloc()`.
  * @throws std::runtime_error if the parsed processor ID is unrecognized.
  */
 uint32_t Mailbox::get_mem_flag()

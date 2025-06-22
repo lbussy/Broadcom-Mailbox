@@ -38,40 +38,40 @@ int main()
         std::cout << "Opening mailbox.\n";
         ::mailbox.open();
 
-        std::cout << "Mailbox FD: " << ::mailbox.get_fd() << "\n";
+        std::cout << "Mailbox FD: " << ::mailbox.getFD() << "\n";
 
         std::cout << "Discovering peripheral base.\n";
-        uint32_t base = Mailbox::discover_peripheral_base();
+        uint32_t base = Mailbox::discoverPeripheralBase();
         std::cout << "Peripheral base: 0x" << std::hex << base << std::dec << "\n";
 
         std::cout << "Allocating " << Mailbox::PAGE_SIZE << " bytes.\n";
-        uint32_t handle = ::mailbox.mem_alloc(Mailbox::PAGE_SIZE, Mailbox::BLOCK_SIZE);
+        uint32_t handle = ::mailbox.memAlloc(Mailbox::PAGE_SIZE, Mailbox::BLOCK_SIZE);
         std::cout << "Allocated handle: " << handle << "\n";
 
         std::cout << "Locking handle.\n";
-        std::uintptr_t bus_addr = ::mailbox.mem_lock(handle);
+        std::uintptr_t bus_addr = ::mailbox.memLock(handle);
         std::cout << "Locked bus address: 0x" << std::hex << bus_addr << std::dec << "\n";
 
         std::cout << "Unlocking handle.\n";
-        uint32_t unlock_res = ::mailbox.mem_unlock(handle);
+        uint32_t unlock_res = ::mailbox.memUnlock(handle);
         std::cout << "Unlock result: " << unlock_res << "\n";
 
         std::cout << "Freeing handle.\n";
-        uint32_t free_res = ::mailbox.mem_free(handle);
+        uint32_t free_res = ::mailbox.memFree(handle);
         std::cout << "Free result: " << free_res << "\n";
 
         std::cout << "Mapping memory region at peripheral base.\n";
-        volatile uint8_t *vaddr = ::mailbox.mapmem(base, Mailbox::PAGE_SIZE);
+        volatile uint8_t *vaddr = ::mailbox.mapMem(base, Mailbox::PAGE_SIZE);
         std::cout << "Mapped address: 0x"
                   << std::hex << reinterpret_cast<std::uintptr_t>(vaddr)
                   << std::dec << "\n";
 
         std::cout << "Unmapping memory region.\n";
-        ::mailbox.unmapmem(vaddr, Mailbox::PAGE_SIZE);
+        ::mailbox.unMapMem(vaddr, Mailbox::PAGE_SIZE);
         std::cout << "Unmapped.\n";
 
         std::cout << "Closing mailbox.\n";
-        ::mailbox.mbox_close();
+        ::mailbox.close();
         std::cout << "Done.\n";
 
         return EXIT_SUCCESS;
@@ -80,9 +80,9 @@ int main()
     {
         std::cerr << "Error: " << e.what() << "\n";
         // Attempt to close if open
-        if (::mailbox.get_fd() >= 0)
+        if (::mailbox.getFD() >= 0)
         {
-            ::mailbox.mbox_close();
+            ::mailbox.close();
         }
         return EXIT_FAILURE;
     }

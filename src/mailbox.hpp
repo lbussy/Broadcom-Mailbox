@@ -81,14 +81,14 @@ public:
      *
      * @throws std::system_error  If the underlying close() call fails.
      */
-    void mbox_close();
+    void close();
 
     /**
      * @brief Get the underlying mailbox file descriptor.
      *
      * @return The file descriptor obtained via `open()`, or -1 if the mailbox is closed.
      */
-    [[nodiscard]] int get_fd() const noexcept { return fd_; }
+    [[nodiscard]] int getFD() const noexcept { return fd_; }
 
     /**
      * @brief Allocate GPU-accessible memory via the mailbox property interface.
@@ -102,7 +102,7 @@ public:
      * @return A handle (uint32_t) identifying the allocated memory block.
      * @throws std::system_error if the ioctl to the mailbox device fails.
      */
-    [[nodiscard]] uint32_t mem_alloc(uint32_t size, uint32_t align);
+    [[nodiscard]] uint32_t memAlloc(uint32_t size, uint32_t align);
 
     /**
      * @brief Free previously allocated GPU memory via the mailbox property interface.
@@ -110,11 +110,11 @@ public:
      * Constructs and sends a mailbox property message to release a memory block
      * identified by the given handle.
      *
-     * @param handle Handle returned by a prior call to mem_alloc().
+     * @param handle Handle returned by a prior call to memAlloc().
      * @return Result code from the mailbox property response (non-zero indicates success).
      * @throws std::system_error if the ioctl to the mailbox device fails.
      */
-    uint32_t mem_free(uint32_t handle);
+    uint32_t memFree(uint32_t handle);
 
     /**
      * @brief Lock a previously allocated GPU memory block to obtain its bus address.
@@ -122,11 +122,11 @@ public:
      * Constructs and sends a mailbox property message to lock a memory block
      * identified by the given handle, returning its bus address for DMA use.
      *
-     * @param handle Handle returned by a prior call to mem_alloc().
+     * @param handle Handle returned by a prior call to memAlloc().
      * @return Physical (bus) address of the locked memory block.
      * @throws std::system_error if the ioctl to the mailbox device fails.
      */
-    [[nodiscard]] std::uintptr_t mem_lock(uint32_t handle);
+    [[nodiscard]] std::uintptr_t memLock(uint32_t handle);
 
     /**
      * @brief Unlock a previously locked GPU memory block.
@@ -134,11 +134,11 @@ public:
      * Constructs and sends a mailbox property message to unlock a memory block
      * identified by the given handle, allowing it to be freed or reallocated.
      *
-     * @param handle Handle returned by mem_alloc() and previously passed to mem_lock().
+     * @param handle Handle returned by memAlloc() and previously passed to memLock().
      * @return Result code: non-zero indicates success.
      * @throws std::system_error if the ioctl to the mailbox device fails.
      */
-    uint32_t mem_unlock(uint32_t handle);
+    uint32_t memUnlock(uint32_t handle);
 
     /**
      * @brief Map a physical bus address range into user-space memory.
@@ -153,20 +153,20 @@ public:
      * @return A pointer to the mapped memory region, adjusted by the page offset.
      * @throws std::system_error if opening `/dev/mem` or the mmap operation fails.
      */
-    [[nodiscard]] volatile uint8_t *mapmem(uint32_t base, size_t size);
+    [[nodiscard]] volatile uint8_t *mapMem(uint32_t base, size_t size);
 
     /**
      * @brief Unmap a previously mapped bus address region.
      *
      * Calculates the original mapping base by removing the page offset
-     * from the pointer returned by mapmem(), then calls munmap() to
+     * from the pointer returned by mapMem(), then calls munmap() to
      * release the mapping.
      *
-     * @param addr Pointer returned by mapmem(), adjusted into the mapped region.
-     * @param size The number of bytes that were mapped (same size passed to mapmem()).
+     * @param addr Pointer returned by mapMem(), adjusted into the mapped region.
+     * @param size The number of bytes that were mapped (same size passed to mapMem()).
      * @throws std::system_error if munmap() fails.
      */
-    void unmapmem(volatile uint8_t *addr, size_t size);
+    void unMapMem(volatile uint8_t *addr, size_t size);
 
     /**
      * @brief Determine the SoC peripheral base address from the device tree.
@@ -178,7 +178,7 @@ public:
      *
      * @return The bus-addressable peripheral base to use for mmap offsets.
      */
-    [[nodiscard]] static uint32_t discover_peripheral_base();
+    [[nodiscard]] static uint32_t discoverPeripheralBase();
 
     /**
      * @brief Convert a bus address into its underlying physical address.
@@ -190,7 +190,7 @@ public:
      * @return The physical address with flag bits masked off.
      */
     [[nodiscard]] static constexpr std::uintptr_t
-    bus_to_physical(std::uintptr_t x) noexcept
+    busToPhysical(std::uintptr_t x) noexcept
     {
         return x & ~BUS_FLAG_MASK;
     }
@@ -205,7 +205,7 @@ public:
      * @return The offset (in bytes) from the peripheral base address.
      */
     [[nodiscard]] static constexpr std::uintptr_t
-    offset_from_base(std::uintptr_t x) noexcept
+    offsetFromBase(std::uintptr_t x) noexcept
     {
         return x - PERIPH_BUS_BASE;
     }
@@ -261,7 +261,7 @@ private:
     /**
      * @brief Path to the raw memory device.
      *
-     * Used by mapmem() to open `/dev/mem` for physical memory mapping.
+     * Used by mapMem() to open `/dev/mem` for physical memory mapping.
      */
     static inline constexpr char MEM_FILE_NAME[] = "/dev/mem";
 
@@ -278,7 +278,7 @@ private:
      * Reads `/proc/cpuinfo` (cached on first call), extracts the processor ID,
      * and returns 0x0C for BCM2835 (Pi 1) or 0x04 for later models (Pi 2/3/4).
      *
-     * @return The mem_flag to pass into mem_alloc().
+     * @return The mem_flag to pass into memAlloc().
      * @throws std::runtime_error on an unrecognized chipset.
      */
     [[nodiscard]] uint32_t get_mem_flag();

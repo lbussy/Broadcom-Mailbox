@@ -36,6 +36,9 @@
 #include <stdexcept>
 #include <vector>
 
+// POSIX/system headers
+#include <linux/ioctl.h> // for IOCTL_MBOX_PROPERTY
+
 class Mailbox
 {
 public:
@@ -231,6 +234,37 @@ public:
     static constexpr size_t BLOCK_SIZE = 4 * 1024;
 
 private:
+    /**
+     * @brief Major device number for the mailbox property interface on newer kernels (>= 4.1).
+     */
+    static inline constexpr int MAJOR_NUM_A = 249;
+
+    /**
+     * @brief Major device number for the mailbox property interface on older kernels.
+     */
+    static inline constexpr int MAJOR_NUM_B = 100;
+
+    /**
+     * @brief IOCTL command code for the mailbox property interface.
+     *
+     * Builds a read-write IOCTL with major number MAJOR_NUM_B and command 0.
+     */
+    static inline constexpr int IOCTL_MBOX_PROPERTY = _IOWR(MAJOR_NUM_B, 0, char *);
+
+    /**
+     * @brief Path to the mailbox character device.
+     *
+     * Used by mbox_open() to open `/dev/vcio`.
+     */
+    static inline constexpr char DEVICE_FILE_NAME[] = "/dev/vcio";
+
+    /**
+     * @brief Path to the raw memory device.
+     *
+     * Used by mapmem() to open `/dev/mem` for physical memory mapping.
+     */
+    static inline constexpr char MEM_FILE_NAME[] = "/dev/mem";
+
     /**
      * @brief File descriptor for the opened mailbox device.
      *

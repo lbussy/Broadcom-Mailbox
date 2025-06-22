@@ -40,21 +40,9 @@
 // POSIX/system headers
 #include <endian.h> // for be32toh()
 #include <fcntl.h>
-#include <linux/ioctl.h> // for IOCTL_MBOX_PROPERTY
 #include <sys/ioctl.h>
 #include <sys/mman.h> // for mmap, munmap
 #include <unistd.h>
-
-/** New kernel version (>= 4.1) major device number. */
-#define MAJOR_NUM_A 249
-/** Older kernel version major device number. */
-#define MAJOR_NUM_B 100
-/** IOCTL command for mailbox property interface. */
-#define IOCTL_MBOX_PROPERTY _IOWR(MAJOR_NUM_B, 0, char *)
-/** Name of the mailbox device file. */
-#define DEVICE_FILE_NAME "/dev/vcio"
-/** Name of the memory device file. */
-#define MEM_FILE_NAME "/dev/mem"
 
 /**
  * @brief Global instance of the Broadcom Mailbox interface shim.

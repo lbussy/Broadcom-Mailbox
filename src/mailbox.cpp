@@ -166,13 +166,17 @@ uint32_t Mailbox::memAlloc(uint32_t size, uint32_t align)
     if (::ioctl(fd_, IOCTL_MBOX_PROPERTY, buf.data()) < 0)
     {
         int err = errno;
+        if (err == ETIMEDOUT || err == EAGAIN)
+        {
+            // Clean up mailbox state so callers can retry from scratch
+            close();
+            throw std::runtime_error("Mailbox::memAlloc(): timed out, mailbox closed for recovery");
+        }
         throw std::system_error(
-            err,
-            std::generic_category(),
+            err, std::generic_category(),
             "Mailbox::memAlloc(): ioctl failed");
     }
 
-    // On success, the handle is returned in buf[5]
     return buf[5];
 }
 

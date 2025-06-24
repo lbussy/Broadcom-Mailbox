@@ -62,11 +62,9 @@ public:
      * @brief Opens the mailbox device.
      *
      * Attempts to open the mailbox device file specified by DEVICE_FILE_NAME.
-     * If the mailbox is already open, throws a logic_error.
      * On failure to open the file, throws a system_error with the errno
-     * and a descriptive message.
+     * and a descriptive message.  Idempotent, multiple open() are NOPs.
      *
-     * @throws std::logic_error   If the mailbox is already open.
      * @throws std::system_error  If the underlying open() call fails.
      */
     void open();
@@ -75,9 +73,9 @@ public:
      * @brief Closes the mailbox device.
      *
      * If the mailbox file descriptor is valid, attempts to close it.
-     * If the underlying close() call fails, throws a system_error with the errno
-     * and a descriptive message. After successful close, the internal file
-     * descriptor is reset to -1.
+     * If the underlying close() call fails, throws a system_error with the
+     * errno and a descriptive message. After successful close, the internal
+     * file descriptor is reset to -1.
      *
      * @throws std::system_error  If the underlying close() call fails.
      */
@@ -254,7 +252,7 @@ private:
     /**
      * @brief Path to the mailbox character device.
      *
-     * Used by mbox_open() to open `/dev/vcio`.
+     * Used by open() to open `/dev/vcio`.
      */
     static inline constexpr char DEVICE_FILE_NAME[] = "/dev/vcio";
 

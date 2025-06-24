@@ -77,17 +77,16 @@ Mailbox::~Mailbox()
  * @brief Opens the mailbox device.
  *
  * Attempts to open the mailbox device file specified by DEVICE_FILE_NAME.
- * If the mailbox is already open, throws a logic_error.
  * On failure to open the file, throws a system_error with the errno
- * and a descriptive message.
+ * and a descriptive message.  Idempotent, multiple open() are NOPs.
  *
- * @throws std::logic_error   If the mailbox is already open.
  * @throws std::system_error  If the underlying open() call fails.
  */
 void Mailbox::open()
 {
+    // if already open, do nothing
     if (fd_ >= 0)
-        throw std::logic_error("Mailbox is already open");
+        return;
 
     int file_desc = ::open(DEVICE_FILE_NAME, O_RDWR);
     if (file_desc < 0)
@@ -106,24 +105,27 @@ void Mailbox::open()
  * @brief Closes the mailbox device.
  *
  * If the mailbox file descriptor is valid, attempts to close it.
- * If the underlying close() call fails, throws a system_error with the errno
- * and a descriptive message. After successful close, the internal file
- * descriptor is reset to -1.
+ * If the underlying close() call fails, throws a system_error with the
+ * errno and a descriptive message. After successful close, the internal
+ * file descriptor is reset to -1.
  *
  * @throws std::system_error  If the underlying close() call fails.
  */
 void Mailbox::close()
 {
     if (fd_ < 0)
-        return;
+        return;   // Already closed
 
-    if (::close(fd_) < 0)
-    {
-        int err = errno;
-        throw std::system_error(
-            err,
-            std::generic_category(),
-            std::string("Mailbox::close(): failed to close ") + DEVICE_FILE_NAME);
+    if (::close(fd_) < 0) {
+        if (errno != EBADF) {
+            // Only treat errors other than not open as fatal
+            int err = errno;
+            throw std::system_error(
+                err,
+                std::generic_category(),
+                std::string("Mailbox::close(): failed to close ") + DEVICE_FILE_NAME);
+        }
+        // EBADF: Aomebody else closed it, we’ll just drop it
     }
 
     fd_ = -1;
@@ -143,21 +145,24 @@ void Mailbox::close()
  */
 uint32_t Mailbox::memAlloc(uint32_t size, uint32_t align)
 {
-    constexpr uint32_t TAG_ALLOC = 0x3000C;  // allocation tag
-    constexpr uint32_t END_TAG = 0x00000000; // end-of-tags marker
-    uint32_t flags = get_mem_flag();         // determine mem_flag internally
+    if (fd_ < 0)
+        throw std::logic_error("memAlloc(): Mailbox not open.");
+
+    constexpr uint32_t TAG_ALLOC = 0x3000C;  // Allocation tag
+    constexpr uint32_t END_TAG = 0x00000000; // End-of-tags marker
+    uint32_t flags = get_mem_flag();         // Determine mem_flag internally
 
     // Build the property message buffer (9 words total)
     std::array<uint32_t, 9> buf = {
-        0,         // [0] total message size (bytes) - to be filled below
-        0,         // [1] request code (0 = request)
-        TAG_ALLOC, // [2] tag identifier for memAlloc
-        12,        // [3] value buffer size (bytes)
-        12,        // [4] value length (bytes)
-        size,      // [5] allocation size in bytes
-        align,     // [6] memory alignment in bytes
-        flags,     // [7] allocation flags
-        END_TAG    // [8] end tag
+        0,         // [0] Total message size (bytes) - to be filled below
+        0,         // [1] Request code (0 = request)
+        TAG_ALLOC, // [2] Tag identifier for memAlloc
+        12,        // [3] Value buffer size (bytes)
+        12,        // [4] Value length (bytes)
+        size,      // [5] Allocation size in bytes
+        align,     // [6] Memory alignment in bytes
+        flags,     // [7] Allocation flags
+        END_TAG    // [8] End tag
     };
     // Fill in the total message size
     buf[0] = static_cast<uint32_t>(buf.size() * sizeof(uint32_t));
@@ -170,7 +175,7 @@ uint32_t Mailbox::memAlloc(uint32_t size, uint32_t align)
         {
             // Clean up mailbox state so callers can retry from scratch
             close();
-            throw std::runtime_error("Mailbox::memAlloc(): timed out, mailbox closed for recovery");
+            throw std::runtime_error("Mailbox::memAlloc(): timed out, mailbox closed.");
         }
         throw std::system_error(
             err, std::generic_category(),
@@ -192,6 +197,9 @@ uint32_t Mailbox::memAlloc(uint32_t size, uint32_t align)
  */
 uint32_t Mailbox::memFree(uint32_t handle)
 {
+    if (fd_ < 0)
+        throw std::logic_error("memFree(): Mailbox not open.");
+
     constexpr uint32_t TAG_FREE = 0x3000F;   // Free tag
     constexpr uint32_t END_TAG = 0x00000000; // End-of-tags marker
 
@@ -234,8 +242,11 @@ uint32_t Mailbox::memFree(uint32_t handle)
  */
 std::uintptr_t Mailbox::memLock(uint32_t handle)
 {
-    constexpr uint32_t TAG_LOCK = 0x3000D;   // lock tag
-    constexpr uint32_t END_TAG = 0x00000000; // end-of-tags marker
+    if (fd_ < 0)
+        throw std::logic_error("memLock(): Mailbox not open.");
+
+    constexpr uint32_t TAG_LOCK = 0x3000D;   // Lock tag
+    constexpr uint32_t END_TAG = 0x00000000; // End-of-tags marker
 
     std::array<uint32_t, 7> buf = {
         0,        // [0] Total message size
@@ -272,9 +283,12 @@ std::uintptr_t Mailbox::memLock(uint32_t handle)
  */
 uint32_t Mailbox::memUnlock(uint32_t handle)
 {
+    if (fd_ < 0)
+        throw std::logic_error("memUnlock(): Mailbox not open.");
+
     // Tag definitions
-    constexpr uint32_t TAG_UNLOCK = 0x3000E; // mailbox “unlock” tag
-    constexpr uint32_t END_TAG = 0x00000000; // end marker
+    constexpr uint32_t TAG_UNLOCK = 0x3000E; // Mailbox “unlock” tag
+    constexpr uint32_t END_TAG = 0x00000000; // End marker
 
     // Build the property buffer
     std::array<uint32_t, 7> buf = {
@@ -317,6 +331,9 @@ uint32_t Mailbox::memUnlock(uint32_t handle)
  */
 volatile uint8_t *Mailbox::mapMem(uint32_t base, size_t size)
 {
+    if (fd_ < 0)
+        throw std::logic_error("mapMem(): Mailbox not open.");
+
     // Compute page‐aligned base and offset within page
     const unsigned offset = base % PAGE_SIZE;
     const off_t aligned_base = static_cast<off_t>(base - offset);
@@ -366,6 +383,9 @@ volatile uint8_t *Mailbox::mapMem(uint32_t base, size_t size)
  */
 void Mailbox::unMapMem(volatile uint8_t *addr, size_t size)
 {
+    if (fd_ < 0)
+        throw std::logic_error("unMapMem(): Mailbox not open.");
+
     // Compute the original mapping base by stripping the page‐offset
     auto addr_val = reinterpret_cast<std::uintptr_t>(addr);
     const std::size_t offset = addr_val % PAGE_SIZE;

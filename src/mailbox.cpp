@@ -33,7 +33,9 @@
 #include <array>
 #include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <system_error>
 
@@ -43,6 +45,13 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h> // for mmap, munmap
 #include <unistd.h>
+
+#ifdef DEBUG_MAILBOX
+constexpr const bool debug = true;
+#else
+constexpr const bool debug = false;
+#endif
+inline constexpr std::string_view debug_tag{"[Mailbox         ] "};
 
 /**
  * @brief Global instance of the Broadcom Mailbox interface shim.
@@ -114,10 +123,12 @@ void Mailbox::open()
 void Mailbox::close()
 {
     if (fd_ < 0)
-        return;   // Already closed
+        return; // Already closed
 
-    if (::close(fd_) < 0) {
-        if (errno != EBADF) {
+    if (::close(fd_) < 0)
+    {
+        if (errno != EBADF)
+        {
             // Only treat errors other than not open as fatal
             int err = errno;
             throw std::system_error(
@@ -331,43 +342,105 @@ uint32_t Mailbox::memUnlock(uint32_t handle)
  */
 volatile uint8_t *Mailbox::mapMem(uint32_t base, size_t size)
 {
+    if (debug)
+    {
+        std::cerr
+            << debug_tag
+            << "[mapMem] Called with base=0x"
+            << std::hex
+            << base
+            << " size=0x"
+            << size
+            << std::dec
+            << std::endl;
+    }
+
     if (fd_ < 0)
+    {
+        if (debug)
+        {
+            std::cerr
+                << debug_tag
+                << "[mapMem] ERROR: fd_ is invalid, mailbox not open"
+                << std::endl;
+
+        }
         throw std::logic_error("mapMem(): Mailbox not open.");
+    }
 
-    // Compute page‐aligned base and offset within page
     const unsigned offset = base % PAGE_SIZE;
-    const off_t aligned_base = static_cast<off_t>(base - offset);
+    const off_t aligned_base = base - offset;
 
-    // Open /dev/mem
+    if (debug)
+    {
+        std::cerr
+            << debug_tag
+            << "[mapMem] aligned_base=0x"
+            << std::hex
+            << aligned_base
+            << " offset=0x"
+            << offset
+            << std::dec
+            << std::endl;
+    }
+
     int mem_fd = ::open(MEM_FILE_NAME, O_RDWR | O_SYNC);
     if (mem_fd < 0)
     {
         int e = errno;
+        if (debug)
+        {
+            std::cerr
+                << debug_tag
+                << "[mapMem] ERROR: Failed to open /dev/mem: "
+                << strerror(e)
+                << std::endl;
+        }
         throw std::system_error(
             e, std::generic_category(),
-            std::string("Mailbox::mapMem(): cannot open ") + MEM_FILE_NAME);
+            std::string("mapMem(): cannot open ") + MEM_FILE_NAME);
     }
 
-    // mmap the physical region
-    void *mapped = ::mmap(
-        nullptr,
-        size,
-        PROT_READ | PROT_WRITE,
-        MAP_SHARED,
-        mem_fd,
-        aligned_base);
+    if (debug)
+    {
+        std::cerr
+            << debug_tag
+            << "[mapMem] /dev/mem opened, fd="
+            << mem_fd
+            << std::endl;
+    }
+
+    void *mapped = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, aligned_base);
     ::close(mem_fd);
 
     if (mapped == MAP_FAILED)
     {
         int e = errno;
-        throw std::system_error(
-            e, std::generic_category(),
-            "Mailbox::mapMem(): mmap failed");
+        if (debug)
+        {
+            std::cerr
+                << debug_tag
+                << "[mapMem] ERROR: mmap failed: "
+                << strerror(e)
+                << std::endl;
+        }
+        throw std::system_error(e, std::generic_category(), "mapMem(): mmap failed");
     }
 
-    // Return pointer adjusted by the page‐offset
-    return static_cast<uint8_t *>(mapped) + offset;
+    void *adjusted = static_cast<uint8_t *>(mapped) + offset;
+
+    if (debug)
+    {
+        std::cerr
+            << debug_tag
+            << "[mapMem] mmap succeeded. mapped="
+            << mapped
+            << ", adjusted="
+            << adjusted
+            << std::endl;
+    }
+
+    return static_cast<volatile uint8_t *>(adjusted);
 }
 
 /**

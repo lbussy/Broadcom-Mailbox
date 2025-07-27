@@ -1,7 +1,7 @@
 /**
  * @file bcm_model.hpp
  *
- * @brief @brief Definitions for identifying Broadcom SoC processor variants.
+ * @brief Definitions for identifying Broadcom SoC processor variants.
  * Provides an enumeration of supported BCM host processor IDs (BCM2835,
  * BCM2836, BCM2837, BCM2711) and a helper function to convert the enum
  * to a human-readable string. Used for selecting appropriate mailbox memory
